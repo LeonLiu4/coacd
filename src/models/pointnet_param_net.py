@@ -1,22 +1,29 @@
+from typing import Dict, Any
+import torch as th
 import torch.nn as nn
-import torch
+from gymnasium import spaces
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 
-class PointNetParamNet(nn.Module):
-    """PointNet encoder + shallow MLP ⇒ 3‑D action in [-1,1]."""
-    def __init__(self, feat_dim: int = 128):
-        super().__init__()
-        self.encoder = nn.Sequential(
-            nn.Linear(3, 64), nn.ReLU(),
-            nn.Linear(64, 128), nn.ReLU(),
-            nn.Linear(128, feat_dim), nn.ReLU(),
+class PointNetFeatureExtractor(BaseFeaturesExtractor):
+    def __init__(
+        self,
+        observation_space: spaces.Box,
+        features_dim: int = 128,          # size of the output vector handed to SB3
+        **kwargs: Dict[str, Any],         # keep kwargs so YAML/Hydra configs don’t break
+    ):
+        super().__init__(observation_space, features_dim)
+
+        # ---- backbone ----
+        self.backbone = nn.Sequential(
+            nn.Linear(3, 64),  nn.ReLU(),
+            nn.Linear(64,128), nn.ReLU(),
+            nn.Linear(128,256), nn.ReLU(),
+            nn.Linear(256,features_dim), nn.ReLU(),  # (B,N,F)
         )
-        self.head = nn.Sequential(
-            nn.Linear(feat_dim, 64), nn.ReLU(),
-            nn.Linear(64, 3), nn.Tanh()
-        )
 
-    def forward(self, pts: torch.Tensor):
-        x = self.encoder(pts)         # (B,N,F)
-        x = x.max(dim=1).values       # (B,F) global feature
-        return self.head(x)           # (B,3)
+    def forward(self, obs: th.Tensor) -> th.Tensor:
+        # obs comes in as (B, N, 3) if you followed Gymnasium’s convention
+        feat_per_point = self.backbone(obs)     # (B,N,F)
+        global_feat    = feat_per_point.max(dim=1).values   # (B,F)
+        return global_feat                       # SB3 routes this to the actor & critic

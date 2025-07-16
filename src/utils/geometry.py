@@ -34,8 +34,10 @@ def hausdorff(a_pts: torch.Tensor, b_pts: torch.Tensor) -> float:
 
 
 def sample_points(mesh: trimesh.Trimesh, n_pts: int) -> np.ndarray:
-    """Uniformly sample *interior* points; fall back to surface if needed."""
-    pts = trimesh.sample.volume_mesh(mesh, n_pts)
-    if pts.size == 0:                       # open / non‑manifold mesh
-        pts = mesh.sample(n_pts)
-    return np.ascontiguousarray(pts, dtype=np.float32)   # 👈 single ndarray
+    """Return exactly `n_pts` points every time."""
+    pts = mesh.sample(n_pts)              # surface sample is fast & always fills
+    # mesh.sample already guarantees size, but be safe:
+    if pts.shape[0] < n_pts:
+        extra = mesh.sample(n_pts - pts.shape[0])
+        pts   = np.vstack([pts, extra])
+    return np.ascontiguousarray(pts, dtype=np.float32)

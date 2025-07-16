@@ -6,7 +6,16 @@ import torch
 import numpy as np
 import trimesh
 
-from utils.geometry import run_coacd, sample_points, hausdorff
+from ..utils.geometry import run_coacd, sample_points, hausdorff
+import time
+from contextlib import contextmanager
+
+@contextmanager
+def tic(label: str):
+    t0 = time.perf_counter()
+    yield
+    dt = (time.perf_counter() - t0) * 1e3  # → ms
+    print(f"[TIMER] {label:<15} {dt:7.1f} ms")
 
 # ---------------------------------------------------------------------
 #  Device
@@ -48,7 +57,7 @@ class CoACDEnv(gym.Env):
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
 
         # Pre‑sample fixed interior points from the source mesh
-        self.src_pts = torch.as_tensor(sample_points(self.mesh, npts).copy(), dtype=torch.float32)[None].to(device)
+        self.src_pts = torch.as_tensor(sample_points(self.mesh, npts).copy(), dtype=torch.float32)[None]
 
     # ------------------------------------------------------------------
     #  Standard Gym API
@@ -58,37 +67,49 @@ class CoACDEnv(gym.Env):
         return self.src_pts.squeeze(0).cpu().numpy(), {}
 
     def step(self, action: np.ndarray):
-        # ----- map normalised action → real CoACD parameters ----------
-        threshold = 0.01 + (action[0] * 0.5 + 0.5) * 0.99      # [0.01,1]
-        no_merge  = bool(action[1] > 0)                         # True/False
-        max_hull  = int(10 + (action[2] * 0.5 + 0.5) * 90)      # [10,100]
+        """
+        Execute one CoACD decomposition step and return the usual Gym tuple.
+        Added [TIMER] prints show wall‑time for each block in milliseconds.
+        """
+        # -------- map normalized action -> real CoACD parameters ------------
+        with tic("map‑action"):
+            threshold = 0.01 + (action[0] * 0.5 + 0.5) * 0.99      # [0.01,1]
+            no_merge  = bool(action[1] > 0)                         # True/False
+            max_hull  = int(10 + (action[2] * 0.5 + 0.5) * 90)      # [10,100]
 
-        # ----- run CoACD ---------------------------------------------
-        with tempfile.TemporaryDirectory() as tmp:
-            t0 = time.time()
-            out_mesh_path = run_coacd(
-                self.mesh_path,
-                tmp,
-                threshold=threshold,
-                no_merge=no_merge,
-                max_hull=max_hull,
+        # -------------------------- run CoACD -------------------------------
+        with tic("run CoACD"):
+            with tempfile.TemporaryDirectory() as tmp:
+                t0 = time.time()
+                out_mesh_path = run_coacd(
+                    self.mesh_path,
+                    tmp,
+                    threshold=threshold,
+                    no_merge=no_merge,
+                    max_hull=max_hull,
+                )
+                runtime = time.time() - t0
+                dec_mesh = trimesh.load_mesh(out_mesh_path, process=False)
+
+        # -------------------- sample interior points -----------------------
+        with tic("sample pts"):
+            vol_in  = sample_points(self.mesh,    self.npts)
+            vol_out = sample_points(dec_mesh,     self.npts)
+
+        # ---------------------- Hausdorff distance --------------------------
+        with tic("Hausdorff"):
+            H = hausdorff(
+                torch.as_tensor(vol_in )[None].to(device),
+                torch.as_tensor(vol_out)[None].to(device),
             )
-            runtime = time.time() - t0
-            dec_mesh = trimesh.load_mesh(out_mesh_path, process=False)
 
-        # ----- sample interior points & compute Hausdorff -----------
-        vol_in  = sample_points(self.mesh,     self.npts)
-        vol_out = sample_points(dec_mesh,      self.npts)
+        # ----------------------- reward assembly ---------------------------
+        with tic("assemble reward"):
+            V = dec_mesh.vertices.shape[0] / 1e4   # complexity penalty
+            T = runtime / 10.0                     # time penalty (≈0‑1)
+            reward = -(1.0 * H + 0.1 * V + 0.1 * T)
 
-        H = hausdorff(
-            torch.as_tensor(vol_in.copy())[None].to(device),
-            torch.as_tensor(vol_out.copy())[None].to(device),
-        )                                     # geometric error
-        V = dec_mesh.vertices.shape[0] / 1e4  # complexity penalty
-        T = runtime / 10.0                    # time penalty (≈0‑1)
-
-        reward = -(1.0 * H + 0.1 * V + 0.1 * T)
-
+        # ---------------------------- info ---------------------------------
         info = dict(
             H=H,
             V=int(V * 1e4),
@@ -96,5 +117,6 @@ class CoACDEnv(gym.Env):
             params=dict(threshold=threshold, no_merge=no_merge, max_hull=max_hull),
         )
 
+        # ---------------------------- return -------------------------------
         obs = self.src_pts.squeeze(0).cpu().numpy()
         return obs, reward, True, False, info
