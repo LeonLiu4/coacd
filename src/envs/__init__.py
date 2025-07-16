@@ -1,5 +1,5 @@
 from gymnasium.envs.registration import register
-from .coacd_env import CoACDEnv
+from src.envs.coacd_env import CoACDEnv
 
 register(
     id="CoACD-v0",

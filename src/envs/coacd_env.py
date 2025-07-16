@@ -6,7 +6,7 @@ import torch
 import numpy as np
 import trimesh
 
-from ..utils.geometry import run_coacd, sample_points, hausdorff
+from src.utils.geometry import run_coacd, sample_points, hausdorff
 import time
 from contextlib import contextmanager
 
