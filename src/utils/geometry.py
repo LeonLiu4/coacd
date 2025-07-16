@@ -1,4 +1,5 @@
 import os, subprocess, torch, trimesh
+import numpy as np
 from pytorch3d.ops import knn_points
 
 
@@ -32,7 +33,9 @@ def hausdorff(a_pts: torch.Tensor, b_pts: torch.Tensor) -> float:
     return max(d_ab, d_ba).item()
 
 
-def sample_surface(mesh: trimesh.Trimesh, n: int = 4096) -> torch.Tensor:
-    """Return (1,n,3) tensor of points uniformly on the mesh surface."""
-    pts, _ = trimesh.sample.sample_surface(mesh, n)
-    return torch.tensor(pts, dtype=torch.float32).unsqueeze(0)
+def sample_points(mesh: trimesh.Trimesh, n_pts: int) -> np.ndarray:
+    """Uniformly sample *interior* points; fall back to surface if needed."""
+    pts = trimesh.sample.volume_mesh(mesh, n_pts)
+    if pts.size == 0:                       # open / non‑manifold mesh
+        pts = mesh.sample(n_pts)
+    return np.ascontiguousarray(pts, dtype=np.float32)   # 👈 single ndarray
