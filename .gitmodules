@@ -1,0 +1,3 @@
+[submodule "extern/CoACD"]
+	path = extern/CoACD
+	url = https://github.com/OWNER/CoACD.git
