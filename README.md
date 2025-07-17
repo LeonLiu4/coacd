@@ -99,7 +99,7 @@ unset KMP_DUPLICATE_LIB_OK
 ```
 
 ```bash
-export COACD_MAIN="/Users/leonliu/my_project/extern/CoACD/build/main"
+export COACD_MAIN="$HOME/coacd/extern/CoACD/build/main"
 ```
 
 wrapper:
