@@ -1,24 +1,35 @@
 # COACD parameter optimization using RL
 
-- **`GOAL: For given input mesh, find the best parameters for COACD to do convex decomposition on the input mesh.`**
-- To solve this problem, we will use `RL` to train a network that processes the input mesh, and determine the parameters for COACD.
+* **`GOAL: For given input mesh, find the best parameters for COACD to do convex decomposition on the input mesh.`**
+* To solve this problem, we will use `RL` to train a network that processes the input mesh, and determine the parameters for COACD.
 
-SETUP:
+## SETUP:
 
-LINUX: 
-conda env create -f environment.yml 
+### LINUX:
+
+```bash
+conda env create -f environment.yml
 conda activate coacd_env
+```
 
 Install pytorch3d:
+
+```bash
 pip install ninja cmake
 pip install "git+https://github.com/facebookresearch/pytorch3d.git@stable"
+```
 
 Build binary:
+
+```bash
 cd ~/coacd/extern/CoACD
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target main -j"$(nproc)"
+```
 
 Compatibility wrapper:
+
+```bash
 cat > "$CONDA_PREFIX/bin/coacd" <<'EOF'
 
 #!/usr/bin/env bash
@@ -56,35 +67,51 @@ done
 
 exec "$COACD_MAIN" "${args[@]}"
 EOF
+```
 
+```bash
 chmod +x "$CONDA_PREFIX/bin/coacd"
+```
 
 To run the training:
+
+```bash
 cd ~/coacd
 CUDA_VISIBLE_DEVICES=  python -m src.models.coacd_ppo_train --device cpu
+```
 
-MAC:
-conda env create -f environment.yml 
+### MAC:
+
+```bash
+conda env create -f environment.yml
 conda activate coacd_env
+```
 
 pytorch3d:
+
+```bash
 export KMP_DUPLICATE_LIB_OK=TRUE
 
 pip install --no-build-isolation --no-deps \
   git+https://github.com/facebookresearch/pytorch3d.git@2f11ddc5ee7d6bd56f2fb6744a16776fab6536f7
 
 unset KMP_DUPLICATE_LIB_OK
+```
 
+```bash
 export COACD_MAIN="/Users/leonliu/my_project/extern/CoACD/build/main"
+```
 
 wrapper:
+
+```bash
 cat > "$CONDA_PREFIX/bin/coacd" <<'EOF'
 #!/usr/bin/env bash
 # Minimal CoACD wrapper: translate long flags -> CoACD short flags.
 # Requires COACD_MAIN to point to the actual binary.
 
 if [[ -z "${COACD_MAIN:-}" || ! -x "$COACD_MAIN" ]]; then
-  echo "coacd compat: set \$COACD_MAIN to CoACD binary (extern/CoACD/build/main)." >&2
+  echo "coacd compat: set $COACD_MAIN to CoACD binary (extern/CoACD/build/main)." >&2
   exit 127
 fi
 
@@ -105,7 +132,14 @@ done
 
 exec "$COACD_MAIN" "${args[@]}"
 EOF
+```
+
+```bash
 chmod +x "$CONDA_PREFIX/bin/coacd"
+```
 
 To run:
+
+```bash
 python -m src.models.coacd_ppo_train
+```
