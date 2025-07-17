@@ -10,8 +10,8 @@ from src.models.pointnet_param_net import PointNetFeatureExtractor
 # 2.  Config
 # ---------------------------------------------------------------------
 MESH_PATH   = "assets/bunny.obj"
-N_STEPS     = 16
-TOTAL_STEPS = 1000
+N_STEPS     = 2
+TOTAL_STEPS = 1
 LOG_DIR     = "logs/ppo_pointnet"
 MODEL_DIR   = "models"
 os.makedirs(LOG_DIR, exist_ok=True)
