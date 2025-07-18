@@ -1,27 +1,22 @@
-# environment.yml  (clean, portable)
 name: coacd_env
 channels:
   - conda-forge
-  - defaults          # pytorch channel not needed if torch via pip
+  - defaults
 dependencies:
-  # --- core (conda-managed) ---------------------------------------------------
   - python=3.10
-  - numpy             # let conda resolve; don't pin build hashes
+  - numpy
   - gymnasium
   - rtree
   - pip
-
-  # --- pip section ------------------------------------------------------------
   - pip:
-      - torch==2.7.1              # (or loosen to >=2,<3 if you prefer)
+      - torch==2.7.1
       - stable-baselines3==2.6.0
       - trimesh==4.7.0
-      - tensorboard               # pulls tb-data-server, protobuf, werkzeug, etc.
-      - matplotlib                # UI/plots
-      - pandas                    # data utils
+      - tensorboard
+      - matplotlib
+      - pandas
       - tqdm
       - tabulate
       - yacs
       - fvcore
       - iopath
-      # any *project-local* extras can go here (rl?, termcolor? add if imported)
