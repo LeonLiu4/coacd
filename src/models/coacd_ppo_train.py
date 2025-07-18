@@ -37,10 +37,10 @@ policy_kwargs = dict(
 model = PPO(
     "MlpPolicy",
     env,
-    n_steps      = N_STEPS,
-    batch_size   = 2,
-    learning_rate= 3e-4,
-    verbose      = 1,
+    n_steps         = N_STEPS,
+    batch_size      = 2,
+    learning_rate   = 3e-4,
+    verbose         = 1,
     tensorboard_log = LOG_DIR,
 )
 
