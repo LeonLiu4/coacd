@@ -5,21 +5,21 @@
 
 ## SETUP:
 
-### LINUX:
+### LINUX
 
 ```bash
 conda env create -f environment.yml
 conda activate coacd_env
 ```
 
-Install pytorch3d:
+#### Install pytorch3d
 
 ```bash
 pip install ninja cmake
 pip install "git+https://github.com/facebookresearch/pytorch3d.git@stable"
 ```
 
-Build binary:
+#### Build binary
 
 ```bash
 cd ~/coacd/extern/CoACD
@@ -27,7 +27,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target main -j"$(nproc)"
 ```
 
-Compatibility wrapper:
+#### Compatibility wrapper
 
 ```bash
 cat > "$CONDA_PREFIX/bin/coacd" <<'EOF'
@@ -73,21 +73,21 @@ EOF
 chmod +x "$CONDA_PREFIX/bin/coacd"
 ```
 
-To run the training:
+#### Run training
 
 ```bash
 cd ~/coacd
 CUDA_VISIBLE_DEVICES=  python -m src.models.coacd_ppo_train --device cpu
 ```
 
-### MAC:
+### MAC
 
 ```bash
 conda env create -f environment.yml
 conda activate coacd_env
 ```
 
-pytorch3d:
+#### Install pytorch3d
 
 ```bash
 export KMP_DUPLICATE_LIB_OK=TRUE
@@ -102,7 +102,7 @@ unset KMP_DUPLICATE_LIB_OK
 # export COACD_MAIN="/path/to/your/CoACD/build/main"  # <-- set this if not found automatically
 ```
 
-wrapper:
+#### Compatibility wrapper
 
 ```bash
 cat > "$CONDA_PREFIX/bin/coacd" <<'EOF'
@@ -138,7 +138,7 @@ EOF
 chmod +x "$CONDA_PREFIX/bin/coacd"
 ```
 
-To run:
+#### Run training
 
 ```bash
 python -m src.models.coacd_ppo_train
