@@ -20,3 +20,4 @@ dependencies:
       - yacs
       - fvcore
       - iopath
+      - coacd
