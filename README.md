@@ -40,8 +40,8 @@ This repository uses reinforcement learning to find optimal parameters for CoACD
 
    ```bash
    # CPU only
-   CUDA_VISIBLE_DEVICES= python -m src.models.coacd_ppo_train --device cpu
+   CUDA_VISIBLE_DEVICES= python -m coacd_ppo_train --device cpu
 
    # GPU
-   python -m src.models.coacd_ppo_train
+   python -m coacd_ppo_train
    ```
