@@ -6,18 +6,25 @@ from pytorch3d.ops import knn_points
 # ------------------------------------------------------------------ #
 #  external CLI wrapper                                              #
 # ------------------------------------------------------------------ #
-def run_coacd(mesh_path: str, out_dir: str, *, threshold: float,
-              no_merge: bool, max_hull: int) -> str:
+def run_coacd(mesh_path: str,
+              out_dir: str,
+              *,
+              threshold: float,
+              no_merge: bool,
+              max_hull: int) -> str:
     """Invoke CoACD CLI and return the path to the decomposed OBJ."""
     out_path = os.path.join(out_dir, "decomp.obj")
     cmd = [
         "coacd",
-        "--input", mesh_path,
-        "--output", out_path,
-        "--threshold", f"{threshold:.4f}",
-        "--no-merge" if no_merge else "--merge",
-        "--max_hull", str(max_hull),
+        "-i", mesh_path,
+        "-o", out_path,
+        "-t", f"{threshold:.4f}",
+        # disable merge if requested:
+        *(["-nm"] if no_merge else []),
+        # max number of convex hulls:
+        "-c", str(max_hull),
     ]
+    # (optionally add "--quiet" if you want no logging)
     subprocess.run(cmd, stdout=subprocess.DEVNULL, check=True)
     return out_path
 
