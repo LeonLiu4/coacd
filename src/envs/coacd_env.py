@@ -1,6 +1,7 @@
 # src/envs/coacd_env.py
 import time
 from contextlib import contextmanager
+import concurrent.futures
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -18,9 +19,7 @@ def tic(label: str):
     dt = (time.perf_counter() - t0) * 1e3
     print(f"[TIMER] {label:<15} {dt:7.1f} ms")
 
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 
 class CoACDEnv(gym.Env):
     metadata = {"render_modes": []}
@@ -52,39 +51,58 @@ class CoACDEnv(gym.Env):
     def step(self, action: np.ndarray):
         # map action → parameters
         with tic("map-action"):
-            threshold = 0.01 + (action[0] * 0.5 + 0.5) * 0.99
-            threshold = float(max(0.01, min(threshold, 1.0)))
+            raw = action[0] * 0.5 + 0.5
+            threshold = float(max(0.01, min(0.01 + raw * 0.99, 1.0)))
             no_merge  = bool(action[1] > 0)
             max_hull  = int(10 + (action[2] * 0.5 + 0.5) * 90)
 
-        # run CoACD via Python API
-        with tic("run CoACD"):
-            t0 = time.time()
-            parts = coacd.run_coacd(
-                self._coacd_mesh,
-                threshold=threshold,
-                merge=not no_merge,
-                max_convex_hull=max_hull,
-            )
+        # run CoACD via Python API with timeout
+        limit_sec = 0.1
+        t0 = time.time()
+        timed_out = False
+
+        executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+        future = executor.submit(
+            coacd.run_coacd,
+            self._coacd_mesh,
+            threshold=threshold,
+            merge=not no_merge,
+            max_convex_hull=max_hull,
+        )
+        try:
+            parts = future.result(timeout=limit_sec)
             runtime = time.time() - t0
+            executor.shutdown()
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            runtime = limit_sec
+            timed_out = True
+            executor.shutdown(wait=False, cancel_futures=True)
 
-            # parts is List[ (vertices: np.ndarray, faces: np.ndarray) ]
-            verts_list, faces_list = zip(*parts)
+        if timed_out:
+            reward = -1e3
+            info = {
+                "timeout": True,
+                "T": runtime,
+                "params": {
+                    "threshold": threshold,
+                    "no_merge": no_merge,
+                    "max_hull": max_hull,
+                },
+            }
+            obs = self.src_pts.squeeze(0).cpu().numpy()
+            return obs, reward, True, False, info
 
-            # stitch them into one mesh, remembering to offset face indices
-            all_verts = np.vstack(verts_list)
-            all_faces = []
-            v_off = 0
-            for verts, faces in zip(verts_list, faces_list):
-                all_faces.append(faces + v_off)
-                v_off += verts.shape[0]
-            all_faces = np.vstack(all_faces)
-
-            dec_mesh = trimesh.Trimesh(
-                vertices=all_verts,
-                faces=all_faces,
-                process=False,
-            )
+        # stitch resulting parts into one mesh
+        verts_list, faces_list = zip(*parts)
+        all_verts = np.vstack(verts_list)
+        all_faces = []
+        v_off = 0
+        for verts, faces in zip(verts_list, faces_list):
+            all_faces.append(faces + v_off)
+            v_off += verts.shape[0]
+        all_faces = np.vstack(all_faces)
+        dec_mesh = trimesh.Trimesh(vertices=all_verts, faces=all_faces, process=False)
 
         # sample points
         with tic("sample pts"):
@@ -94,11 +112,11 @@ class CoACDEnv(gym.Env):
         # Hausdorff
         with tic("Hausdorff"):
             H = hausdorff(
-                torch.as_tensor(vol_in )[None].to(device),
+                torch.as_tensor(vol_in)[None].to(device),
                 torch.as_tensor(vol_out)[None].to(device),
             )
 
-        # reward
+        # assemble reward
         with tic("assemble reward"):
             V = dec_mesh.vertices.shape[0] / 1e4
             T = runtime / 10.0
@@ -108,12 +126,12 @@ class CoACDEnv(gym.Env):
             "H": H,
             "V": int(V * 1e4),
             "T": runtime,
-            "params": dict(
-                threshold=threshold,
-                no_merge=no_merge,
-                max_hull=max_hull,
-            ),
+            "timeout": False,
+            "params": {
+                "threshold": threshold,
+                "no_merge": no_merge,
+                "max_hull": max_hull,
+            },
         }
-
         obs = self.src_pts.squeeze(0).cpu().numpy()
         return obs, reward, True, False, info
