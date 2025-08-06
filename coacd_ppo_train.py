@@ -1,96 +1,87 @@
-# src/models/coacd_ppo_train.py
+# coacd_ppo_train.py
 
 import os
 import time
 
 import gymnasium as gym
+from gymnasium.wrappers import TimeLimit
 from gymnasium.envs.registration import register
+
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.callbacks import BaseCallback
 
-from src.envs import CoACDEnv            # your env implementation
+# side‐effect: imports and registers your CoACDEnv under "CoACD-v0"
+import src.envs
+
 from src.models.pointnet_param_net import PointNetFeatureExtractor
 
 # ───────────────────────────────────────────────────────────────────
-# 1) Module-level config (must come *before* make_env so MESH_PATH is in scope)
+# CONFIG
 # ───────────────────────────────────────────────────────────────────
-MESH_PATH   = "assets/bunny_simplified.obj"
-N_STEPS     = 256
-TOTAL_STEPS = 4096
-LOG_DIR     = "logs/ppo_pointnet"
-MODEL_DIR   = "models"
-
-
-class PrintTimestepCallback(BaseCallback):
-    """Print global timestep every `print_freq` environment steps."""
-    def __init__(self, print_freq: int = N_STEPS, verbose: int = 0):
-        super().__init__(verbose)
-        self.print_freq = print_freq
-
-    def _on_step(self) -> bool:
-        if self.num_timesteps % self.print_freq == 0:
-            print(f"[RL] global timestep: {self.num_timesteps}")
-        return True
+MESH_PATH    = "assets/bunny_simplified.obj"
+N_STEPS      = 32             # steps per rollout
+TOTAL_STEPS  = 4096           # total training timesteps
+MAX_EPISODE  = N_STEPS        # force episode end after N_STEPS
+LOG_DIR      = "logs/ppo_pointnet"
+MODEL_DIR    = "models"
 
 
 def make_env():
-    """Factory for our custom CoACDEnv; MESH_PATH is captured from module scope."""
-    return gym.make("CoACD-v0", mesh_path=MESH_PATH)
+    """
+    Factory to create a single CoACD environment, capped in length
+    and wrapped so that Monitor records ep stats into `info["episode"]`.
+    """
+    # 1) Instantiate your custom CoACD gym env
+    env = gym.make("CoACD-v0", mesh_path=MESH_PATH)
+
+    # 2) Force a hard cap so episodes actually terminate
+    env = TimeLimit(env, max_episode_steps=MAX_EPISODE)
+
+    # 3) Wrap in SB3 Monitor so it writes `info["episode"] = {"r":…, "l":…}`
+    env = Monitor(env)
+
+    return env
 
 
 def main():
-    # ─────────────────────────────────────────────────────────────────
-    # Register our custom environment
-    # ─────────────────────────────────────────────────────────────────
-    register(
-        id="CoACD-v0",
-        entry_point="src.envs:CoACDEnv",
-    )
+    # Ensure the env ID is registered (no harm if src.envs already did it)
+    register(id="CoACD-v0", entry_point="src.envs:CoACDEnv")
 
-    # ─────────────────────────────────────────────────────────────────
-    # Prepare log & model dirs
-    # ─────────────────────────────────────────────────────────────────
-    os.makedirs(LOG_DIR, exist_ok=True)
+    # Prepare output folders
+    os.makedirs(LOG_DIR,   exist_ok=True)
     os.makedirs(MODEL_DIR, exist_ok=True)
 
-    # ─────────────────────────────────────────────────────────────────
-    # Build the (monitored) vectorized environment
-    # ─────────────────────────────────────────────────────────────────
-    # We wrap each sub‐env with Monitor (to record episode returns & lengths),
-    # then wrap the DummyVecEnv in VecMonitor to aggregate across processes.
-    env = DummyVecEnv([make_env])
-    env = VecMonitor(env)
+    # Build a single‐env vectorized wrapper, then add VecMonitor
+    vec_env = DummyVecEnv([make_env])
+    vec_env = VecMonitor(vec_env)
 
-    # ─────────────────────────────────────────────────────────────────
-    # Set up PPO with a custom PointNet feature extractor
-    # ─────────────────────────────────────────────────────────────────
+    # Configure our custom PointNet policy
     policy_kwargs = dict(
         features_extractor_class  = PointNetFeatureExtractor,
         features_extractor_kwargs = dict(features_dim=128),
-        net_arch                  = dict(pi=[256, 128], vf=[256, 128]),
+        net_arch                  = dict(pi=[256,128], vf=[256,128]),
     )
 
+    # Instantiate PPO
     model = PPO(
         policy="MlpPolicy",
-        env=env,
-        n_steps=N_STEPS,
-        batch_size=32,
-        learning_rate=3e-4,
-        verbose=1,
-        tensorboard_log=LOG_DIR,
-        policy_kwargs=policy_kwargs,
+        env=vec_env,
+        n_steps        = N_STEPS,
+        batch_size     = 32,
+        learning_rate  = 3e-4,
+        verbose        = 1,
+        tensorboard_log= LOG_DIR,
+        policy_kwargs  = policy_kwargs,
     )
 
-    # ─────────────────────────────────────────────────────────────────
-    # Train & save
-    # ─────────────────────────────────────────────────────────────────
-    callback = PrintTimestepCallback(print_freq=N_STEPS)
-    model.learn(total_timesteps=TOTAL_STEPS, callback=callback)
+    # Train
+    model.learn(total_timesteps=TOTAL_STEPS)
 
-    model.save(os.path.join(MODEL_DIR, f"ppo_pointnet_{int(time.time())}"))
-    env.close()
+    # Save & cleanup
+    outpath = os.path.join(MODEL_DIR, f"ppo_pointnet_{int(time.time())}")
+    model.save(outpath)
+    vec_env.close()
     print("Training finished ✔️")
 
 
