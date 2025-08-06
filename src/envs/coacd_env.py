@@ -8,6 +8,8 @@ from gymnasium import spaces
 import numpy as np
 import torch
 import trimesh
+import os, sys, contextlib
+from multiprocessing import Process, Queue
 import coacd
 
 from src.utils.geometry import sample_points, hausdorff
@@ -28,16 +30,28 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ── background worker that calls CoACD CLI ───────────────────────────
 def _coacd_worker(queue: Queue, mesh, threshold: float, merge: bool, max_hull: int):
     """
-    Run coacd.run_coacd in a subprocess and push the resulting parts onto the queue.
+    Run coacd.run_coacd in a subprocess and return the parts,
+    while squelching **all** console output produced by the C++ library.
     """
-    parts = coacd.run_coacd(
-        mesh,
-        threshold=threshold,
-        merge=merge,
-        max_convex_hull=max_hull,
-    )
-    queue.put(parts)
+    # 1) open the null device once
+    with open(os.devnull, "w") as devnull:
+        # 2) duplicate its fd over stdout (1) and stderr (2)
+        os.dup2(devnull.fileno(), 1)   # C / C++ stdout
+        os.dup2(devnull.fileno(), 2)   # C / C++ stderr
+        # 3) optional: also silence Python-level streams
+        sys.stdout = devnull
+        sys.stderr = devnull
 
+        # 4) call CoACD
+        parts = coacd.run_coacd(
+            mesh,
+            threshold       = threshold,
+            merge           = merge,
+            max_convex_hull = max_hull,
+        )
+
+    # 5) hand results back to parent
+    queue.put(parts)
 
 # ── main Gym environment ─────────────────────────────────────────────
 class CoACDEnv(gym.Env):
