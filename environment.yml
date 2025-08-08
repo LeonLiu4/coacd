@@ -21,3 +21,4 @@ dependencies:
       - fvcore
       - iopath
       - coacd
+      - pyrender

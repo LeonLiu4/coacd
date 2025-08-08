@@ -1,0 +1,23 @@
+{
+  "parameters": {
+    "threshold": 0.1,
+    "max_convex_hull": -1,
+    "preprocess_mode": "auto",
+    "preprocess_resolution": 30,
+    "resolution": 1000,
+    "mcts_nodes": 20,
+    "mcts_iterations": 100,
+    "mcts_max_depth": 3,
+    "pca": false,
+    "merge": true,
+    "decimate": false
+  },
+  "success": true,
+  "runtime": 6.430788040161133,
+  "num_parts": 14,
+  "total_vertices": 1653,
+  "total_faces": 3250,
+  "hausdorff_distance": 0.06811791658401489,
+  "input_vertices": 2560,
+  "input_faces": 5116
+}

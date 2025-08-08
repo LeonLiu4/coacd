@@ -1,5 +1,6 @@
 # src/envs/coacd_env.py
 import time
+import json
 from contextlib import contextmanager
 from multiprocessing import Process, Queue
 
@@ -61,7 +62,7 @@ class CoACDEnv(gym.Env):
 
     metadata = {"render_modes": []}
 
-    def __init__(self, mesh_path: str, npts: int = 4096):
+    def __init__(self, mesh_path: str, npts: int = 4096, baseline_file: str = "baseline_metrics.json"):
         super().__init__()
         self.mesh_path = mesh_path
         self.npts = npts
@@ -73,12 +74,24 @@ class CoACDEnv(gym.Env):
             self.mesh.faces.astype(np.int64),
         )
 
+        # Load baseline metrics for comparison
+        self.baseline_metrics = self._load_baseline_metrics(baseline_file)
+        
+        # Reward coefficients for different metrics
+        self.reward_coefficients = {
+            'hausdorff': 10.0,      # Higher weight for quality
+            'runtime': 1.0,         # Time efficiency
+            'vertices': 0.001,      # Complexity (lower is better)
+            'num_parts': 0.1        # Number of parts (fewer is often better)
+        }
+
         # gym spaces
         self.observation_space = spaces.Box(-1.0, 1.0, (npts, 3), np.float32)
         self.action_space      = spaces.Box(-1.0, 1.0, (3,),     np.float32)
 
         # tracking variables
         self.best_H = None
+        self.best_params = None  # Track best parameters found
         self.step_count = 0
         self.success_threshold = 0.01  # Hausdorff distance threshold for success
 
@@ -88,6 +101,35 @@ class CoACDEnv(gym.Env):
     # ------------------------------------------------------------------
     # helpers
     # ------------------------------------------------------------------
+    def _load_baseline_metrics(self, baseline_file: str):
+        """Load baseline metrics from JSON file."""
+        try:
+            if os.path.exists(baseline_file):
+                with open(baseline_file, 'r') as f:
+                    metrics = json.load(f)
+                print(f"Loaded baseline metrics from {baseline_file}")
+                print(f"  Baseline Hausdorff: {metrics['hausdorff_distance']:.6f}")
+                print(f"  Baseline Runtime: {metrics['runtime']:.3f}s")
+                print(f"  Baseline Vertices: {metrics['total_vertices']}")
+                print(f"  Baseline Parts: {metrics['num_parts']}")
+                return metrics
+            else:
+                print(f"Warning: Baseline file {baseline_file} not found. Using fallback values.")
+                return {
+                    'hausdorff_distance': 0.068,
+                    'runtime': 6.43,
+                    'total_vertices': 1653,
+                    'num_parts': 14
+                }
+        except Exception as e:
+            print(f"Error loading baseline metrics: {e}")
+            return {
+                'hausdorff_distance': 0.068,
+                'runtime': 6.43,
+                'total_vertices': 1653,
+                'num_parts': 14
+            }
+
     def _sample_obs(self, seed: int | None = None):
         """Sample points from the original mesh"""
         if seed is not None:
@@ -99,6 +141,40 @@ class CoACDEnv(gym.Env):
         """Create observation by sampling points from given mesh"""
         pts = sample_points(mesh, self.npts)
         return pts
+
+    def _calculate_comparative_reward(self, hausdorff_dist, runtime, vertices, num_parts):
+        """
+        Calculate reward based on comparison with baseline metrics.
+        If all metrics are better than baseline: reward = coefficient * delta
+        If any metric is worse than baseline: reward = -1
+        """
+        baseline = self.baseline_metrics
+        
+        # Check if each metric is better than baseline (lower is better for all these metrics)
+        hausdorff_better = hausdorff_dist < baseline['hausdorff_distance']
+        runtime_better = runtime < baseline['runtime']
+        vertices_better = vertices < baseline['total_vertices']
+        parts_better = num_parts <= baseline['num_parts']  # Allow equal number of parts
+        
+        # If any metric is worse, return -1
+        if not (hausdorff_better and runtime_better and vertices_better and parts_better):
+            return -1.0
+        
+        # All metrics are better - calculate reward based on deltas
+        hausdorff_delta = baseline['hausdorff_distance'] - hausdorff_dist
+        runtime_delta = baseline['runtime'] - runtime
+        vertices_delta = baseline['total_vertices'] - vertices
+        parts_delta = max(0, baseline['num_parts'] - num_parts)  # Only reward if fewer parts
+        
+        # Calculate weighted reward
+        reward = (
+            self.reward_coefficients['hausdorff'] * hausdorff_delta +
+            self.reward_coefficients['runtime'] * runtime_delta +
+            self.reward_coefficients['vertices'] * vertices_delta +
+            self.reward_coefficients['num_parts'] * parts_delta
+        )
+        
+        return reward
 
     # ------------------------------------------------------------------
     # Gym API
@@ -225,31 +301,36 @@ class CoACDEnv(gym.Env):
                 torch.as_tensor(vol_out)[None].to(device),
             )
 
-        # 6) assemble reward with better scaling and progress tracking
+        # 6) assemble reward using comparative baseline method
         with tic("assemble reward"):
-            V_raw  = dec_mesh.vertices.shape[0]
-            V      = V_raw / 1e4                           # complexity penalty (0-10+ typically)
-            T_norm = min(runtime / 10.0, 1.0)             # time penalty capped at 1.0
+            V_raw = dec_mesh.vertices.shape[0]
+            num_parts = len(parts)
             
-            # Base reward (negative, since we want to minimize)
-            base_reward = -(1.0 * H + 0.1 * V + 0.05 * T_norm)
+            # Calculate comparative reward
+            reward = self._calculate_comparative_reward(H, runtime, V_raw, num_parts)
             
             # Track improvement
             improvement = False
             if self.best_H is None or H < self.best_H:
                 improvement = True
-                if self.best_H is not None:
-                    improvement_bonus = 2.0 * (self.best_H - H)  # bonus proportional to improvement
-                    base_reward += improvement_bonus
                 self.best_H = H
+                # Store best parameters
+                self.best_params = {
+                    "threshold": threshold,
+                    "no_merge": no_merge,
+                    "max_hull": max_hull,
+                    "hausdorff": float(H),
+                    "vertices": int(V_raw),
+                    "runtime": float(runtime),
+                    "num_parts": num_parts
+                }
             
-            # Success bonus
-            success = H < self.success_threshold
+            # Success bonus - if significantly better than baseline
+            success = (H < self.baseline_metrics['hausdorff_distance'] * 0.5 and 
+                      runtime < self.baseline_metrics['runtime'] * 0.8)
             if success:
-                base_reward += 5.0  # big bonus for achieving success
+                reward += 10.0  # big bonus for achieving significant improvement
                 terminated = True   # end episode on success
-            
-            reward = base_reward
 
         # 7) Create observation from the decomposed mesh (key change!)
         obs = self._create_observation(dec_mesh)
@@ -258,6 +339,7 @@ class CoACDEnv(gym.Env):
             "H": float(H),
             "V": int(V_raw),
             "T": runtime,
+            "num_parts": num_parts,
             "timeout": False,
             "success": success,
             "improvement": improvement,
@@ -267,6 +349,44 @@ class CoACDEnv(gym.Env):
 
         # Debug prints
         if self.step_count <= 5 or self.step_count % 10 == 0:
-            print(f"  → H: {H:.4f}, V: {V_raw}, T: {runtime:.3f}s, Reward: {reward:.3f}, Success: {success}, Improvement: {improvement}")
+            print(f"  → H: {H:.4f}, V: {V_raw}, T: {runtime:.3f}s, Parts: {num_parts}, Reward: {reward:.3f}, Success: {success}, Improvement: {improvement}")
 
         return obs, reward, terminated, truncated, info
+
+    def render(self, mode="human"):
+        """Render the current state of the environment."""
+        if mode == "human":
+            if hasattr(self, 'best_params') and self.best_params is not None:
+                from src.utils.visualization import visualize_best_decomposition
+                # Suppress CoACD output during rendering
+                import sys
+                with open(os.devnull, 'w') as devnull:
+                    old_stdout = sys.stdout
+                    old_stderr = sys.stderr
+                    sys.stdout = devnull
+                    sys.stderr = devnull
+                    # Also redirect C++ stdout/stderr
+                    old_stdout_fd = os.dup(1)
+                    old_stderr_fd = os.dup(2)
+                    os.dup2(devnull.fileno(), 1)
+                    os.dup2(devnull.fileno(), 2)
+                    try:
+                        visualize_best_decomposition(
+                            mesh_path=self.mesh_path,
+                            best_params=self.best_params,
+                            save_dir="visualizations"
+                        )
+                    finally:
+                        os.dup2(old_stdout_fd, 1)
+                        os.dup2(old_stderr_fd, 2)
+                        os.close(old_stdout_fd)
+                        os.close(old_stderr_fd)
+                        sys.stdout = old_stdout
+                        sys.stderr = old_stderr
+            else:
+                print("No best parameters available for rendering. Run some steps first.")
+        return None
+
+    def get_best_params(self):
+        """Get the best parameters found so far."""
+        return self.best_params

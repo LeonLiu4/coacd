@@ -18,7 +18,7 @@ from src.models.pointnet_param_net import PointNetFeatureExtractor
 MESH_TRAIN = "assets/bunny_simplified.obj"
 MESH_EVAL  = "assets/bunny_simplified.obj"
 N_STEPS      = 32
-TOTAL_STEPS  = 64
+TOTAL_STEPS  = 4096
 MAX_EPISODE  = N_STEPS
 LOG_DIR      = "logs/ppo_pointnet"
 MODEL_DIR    = "models"
@@ -54,12 +54,9 @@ def main() -> None:
     eval_env  = Monitor(_make_env(MESH_EVAL)())
 
     # ── callbacks ────────────────────────────────────────────────────
-    # stop early if we ever beat some reward (optional)
-    stop_cb   = StopTrainingOnRewardThreshold(reward_threshold=0.0, verbose=1)
-
+    # Removed early stopping to allow full training duration
     eval_cb   = EvalCallback(
         eval_env,
-        callback_on_new_best=stop_cb,          # stop when threshold reached
         best_model_save_path=BEST_DIR,
         log_path            =LOG_DIR,
         eval_freq           =N_STEPS,
@@ -97,6 +94,38 @@ def main() -> None:
     model.save(os.path.join(MODEL_DIR, f"ppo_pointnet_final_{ts}"))
     train_env.close(), eval_env.close()
     print("✓ training done – best model in", BEST_DIR)
+    
+    # ── visualize best results ───────────────────────────────────────
+    print("\n" + "="*50)
+    print("VISUALIZING BEST RESULTS")
+    print("="*50)
+    
+    # Load the best model and visualize
+    try:
+        from visualize_results import load_best_model, evaluate_model_on_mesh
+        from src.utils.visualization import visualize_best_decomposition
+        
+        best_model = load_best_model(BEST_DIR)
+        if best_model:
+            print("Evaluating best model for visualization...")
+            best_params = evaluate_model_on_mesh(best_model, MESH_TRAIN, n_episodes=3)
+            
+            if best_params:
+                print(f"Best parameters found:")
+                for key, value in best_params.items():
+                    print(f"  {key}: {value}")
+                
+                print("\nGenerating visualizations...")
+                os.makedirs("visualizations", exist_ok=True)
+                visualize_best_decomposition(MESH_TRAIN, best_params, "visualizations")
+                print("✓ Visualizations saved to 'visualizations/' directory")
+            else:
+                print("No valid parameters found during evaluation")
+        else:
+            print("Could not load best model for visualization")
+    except Exception as e:
+        print(f"Error during visualization: {e}")
+        print("You can run visualization manually with: python visualize_results.py")
 
 
 if __name__ == "__main__":
