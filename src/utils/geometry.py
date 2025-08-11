@@ -40,8 +40,10 @@ def hausdorff(a_pts: torch.Tensor, b_pts: torch.Tensor) -> float:
     return max(d_ab, d_ba).item()
 
 
-def sample_points(mesh: trimesh.Trimesh, n_pts: int) -> np.ndarray:
+def sample_points(mesh: trimesh.Trimesh, n_pts: int, seed: int = None) -> np.ndarray:
     """Return exactly `n_pts` points every time."""
+    if seed is not None:
+        np.random.seed(seed)
     pts = mesh.sample(n_pts)              # surface sample is fast & always fills
     # mesh.sample already guarantees size, but be safe:
     if pts.shape[0] < n_pts:

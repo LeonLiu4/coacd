@@ -40,33 +40,38 @@ class DetailedLoggingCallback(BaseCallback):
         self.episode_rewards = []
         self.episode_lengths = []
         self.episode_count = 0
+
+        self.total_steps = 0
         
     def _on_step(self) -> bool:
-        # Log episode-level metrics when episode ends
-        if len(self.locals.get('dones', [])) > 0 and any(self.locals['dones']):
-            # Get info from the environment
-            infos = self.locals.get('infos', [])
-            for info in infos:
-                if info:  # info might be empty dict
-                    # Log custom metrics if available
-                    if 'hausdorff_distance' in info:
-                        self.logger.record('custom/hausdorff_distance', info['hausdorff_distance'])
-                    if 'runtime' in info:
-                        self.logger.record('custom/runtime', info['runtime'])
-                    if 'total_vertices' in info:
-                        self.logger.record('custom/total_vertices', info['total_vertices'])
-                    if 'num_parts' in info:
-                        self.logger.record('custom/num_parts', info['num_parts'])
-                    if 'episode_reward' in info:
-                        self.logger.record('custom/episode_reward', info['episode_reward'])
-                    if 'success' in info:
-                        self.logger.record('custom/success_rate', float(info['success']))
-                        
-            # Log general training metrics
-            rewards = self.locals.get('rewards', [])
-            if len(rewards) > 0:
-                self.logger.record('custom/step_reward_mean', float(rewards.mean()))
-                self.logger.record('custom/step_reward_std', float(rewards.std()))
+        self.total_steps += 1
+
+        if self.total_steps % 10 == 0:
+            # Log episode-level metrics when episode ends
+            if len(self.locals.get('dones', [])) > 0 and any(self.locals['dones']):
+                # Get info from the environment
+                infos = self.locals.get('infos', [])
+                for info in infos:
+                    if info:  # info might be empty dict
+                        # Log custom metrics if available
+                        if 'H' in info:
+                            self.logger.record_mean('custom/hausdorff_distance', info['H'])
+                        if 'T' in info:
+                            self.logger.record_mean('custom/runtime', info['T'])
+                        if 'V' in info:
+                            self.logger.record_mean('custom/total_vertices', info['V'])
+                        if 'num_parts' in info:
+                            self.logger.record_mean('custom/num_parts', info['num_parts'])
+                        if 'success' in info:
+                            self.logger.record_mean('custom/success', float(info['success']))
+                            
+                # Log general training metrics
+                rewards = self.locals.get('rewards', [])
+                if len(rewards) > 0:
+                    self.logger.record_mean('custom/step_reward_mean', float(rewards.mean()))
+                    self.logger.record_mean('custom/step_reward_std', float(rewards.std()))
+
+                self.logger.dump(self.total_steps)
                 
         return True
 
@@ -152,29 +157,55 @@ def main() -> None:
     print("VISUALIZING BEST RESULTS")
     print("="*50)
     
-    # Load the best model and visualize
     try:
         from visualize_results import load_best_model, evaluate_model_on_mesh
         from src.utils.visualization import visualize_best_decomposition
+        from src.envs.coacd_env import CoACDEnv
         
-        best_model = load_best_model(BEST_DIR)
-        if best_model:
-            print("Evaluating best model for visualization...")
-            best_params = evaluate_model_on_mesh(best_model, MESH_TRAIN, n_episodes=3)
+        # Get global best parameters from training
+        global_best_params = CoACDEnv.get_global_best_params()
+        
+        if global_best_params:
+            print(f"\n🏆 GLOBAL BEST PERFORMANCE SUMMARY:")
+            print(f"   Hausdorff Distance: {global_best_params.get('hausdorff', 'N/A'):.6f}")
+            print(f"   Runtime: {global_best_params.get('runtime', 'N/A'):.3f}s")
+            print(f"   Total Vertices: {global_best_params.get('vertices', 'N/A')}")
+            print(f"   Number of Parts: {global_best_params.get('num_parts', 'N/A')}")
+            print(f"   Parameters: threshold={global_best_params.get('threshold', 'N/A'):.3f}, "
+                  f"no_merge={global_best_params.get('no_merge', 'N/A')}, "
+                  f"max_hull={global_best_params.get('max_hull', 'N/A')}")
             
-            if best_params:
-                print(f"Best parameters found:")
-                for key, value in best_params.items():
-                    print(f"  {key}: {value}")
-                
-                print("\nGenerating visualizations...")
-                os.makedirs("visualizations", exist_ok=True)
-                visualize_best_decomposition(MESH_TRAIN, best_params, "visualizations")
-                print("✓ Visualizations saved to 'visualizations/' directory")
-            else:
-                print("No valid parameters found during evaluation")
+            print("\nGenerating visualizations...")
+            os.makedirs("visualizations", exist_ok=True)
+            visualize_best_decomposition(MESH_TRAIN, global_best_params, "visualizations")
+            print("✓ Visualizations saved to 'visualizations/' directory")
         else:
-            print("Could not load best model for visualization")
+            print("No global best parameters found during training")
+            
+            # Fallback to model evaluation
+            best_model = load_best_model(BEST_DIR)
+            if best_model:
+                print("Evaluating best model for visualization...")
+                best_params = evaluate_model_on_mesh(best_model, MESH_TRAIN, n_episodes=3)
+                
+                if best_params:
+                    print(f"\n🏆 BEST MODEL PERFORMANCE SUMMARY:")
+                    print(f"   Hausdorff Distance: {best_params.get('hausdorff', 'N/A'):.6f}")
+                    print(f"   Runtime: {best_params.get('runtime', 'N/A'):.3f}s")
+                    print(f"   Total Vertices: {best_params.get('vertices', 'N/A')}")
+                    print(f"   Number of Parts: {best_params.get('num_parts', 'N/A')}")
+                    print(f"   Parameters: threshold={best_params.get('threshold', 'N/A'):.3f}, "
+                          f"no_merge={best_params.get('no_merge', 'N/A')}, "
+                          f"max_hull={best_params.get('max_hull', 'N/A')}")
+                    
+                    print("\nGenerating visualizations...")
+                    os.makedirs("visualizations", exist_ok=True)
+                    visualize_best_decomposition(MESH_TRAIN, best_params, "visualizations")
+                    print("✓ Visualizations saved to 'visualizations/' directory")
+                else:
+                    print("No valid parameters found during evaluation")
+            else:
+                print("Could not load best model for visualization")
     except Exception as e:
         print(f"Error during visualization: {e}")
         print("You can run visualization manually with: python visualize_results.py")
