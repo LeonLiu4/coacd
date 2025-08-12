@@ -90,16 +90,18 @@ def run_baseline_coacd(mesh_path: str, output_file: str = "baseline_metrics.json
             combined_vertices = np.vstack(all_vertices)
             combined_faces = np.vstack(all_faces)
             
-            # Sample points for Hausdorff distance calculation
-            original_points = sample_points(mesh, 4096)
+            # Use consistent sampling like the training environment
+            # Sample fixed evaluation points from original mesh (same as training)
+            np.random.seed(42)
+            fixed_eval_pts = sample_points(mesh, 4096)
+            fixed_eval_tensor = torch.from_numpy(fixed_eval_pts).unsqueeze(0)
+            
+            # Sample reconstructed points with same seed for consistency
             reconstructed_mesh = trimesh.Trimesh(vertices=combined_vertices, faces=combined_faces)
-            reconstructed_points = sample_points(reconstructed_mesh, 4096)
+            reconstructed_pts = sample_points(reconstructed_mesh, 4096, seed=42)
+            reconstructed_tensor = torch.from_numpy(reconstructed_pts).unsqueeze(0)
             
-            # Convert to torch tensors and add batch dimension
-            original_tensor = torch.from_numpy(original_points).unsqueeze(0)
-            reconstructed_tensor = torch.from_numpy(reconstructed_points).unsqueeze(0)
-            
-            hausdorff_dist = hausdorff(original_tensor, reconstructed_tensor)
+            hausdorff_dist = hausdorff(fixed_eval_tensor, reconstructed_tensor)
         else:
             hausdorff_dist = float('inf')
         

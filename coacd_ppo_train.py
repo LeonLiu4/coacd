@@ -18,7 +18,7 @@ from src.models.pointnet_param_net import PointNetFeatureExtractor
 MESH_TRAIN = "assets/bunny_simplified.obj"
 MESH_EVAL  = "assets/bunny_simplified.obj"
 N_STEPS      = 32
-TOTAL_STEPS  = 1024
+TOTAL_STEPS  = 4096
 MAX_EPISODE  = N_STEPS
 LOG_DIR      = "logs/ppo_pointnet"
 MODEL_DIR    = "models"
