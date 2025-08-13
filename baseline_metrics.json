@@ -13,11 +13,11 @@
     "decimate": false
   },
   "success": true,
-  "runtime": 6.200724363327026,
+  "runtime": 6.411757946014404,
   "num_parts": 14,
   "total_vertices": 1653,
   "total_faces": 3250,
-  "hausdorff_distance": 0.06664702296257019,
+  "hausdorff_distance": 0.05755118280649185,
   "input_vertices": 2560,
   "input_faces": 5116
 }

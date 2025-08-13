@@ -12,7 +12,7 @@ import torch
 import trimesh
 import coacd
 
-from src.utils.geometry import sample_points, hausdorff
+from src.utils.geometry import sample_points, hausdorff, sample_surface_points_from_parts
 
 
 @contextmanager
@@ -94,16 +94,16 @@ class CoACDEnv(gym.Env):
             else:
                 print(f"Warning: Baseline file {baseline_file} not found. Using fallback values.")
                 return {
-                    'hausdorff_distance': 0.068,
-                    'runtime': 6.43,
+                    'hausdorff_distance': 0.05755118280649185,
+                    'runtime': 6.411757946014404,
                     'total_vertices': 1653,
                     'num_parts': 14
                 }
         except Exception as e:
             print(f"Error loading baseline metrics: {e}")
             return {
-                'hausdorff_distance': 0.068,
-                'runtime': 6.43,
+                'hausdorff_distance': 0.05755118280649185,
+                'runtime': 6.411757946014404,
                 'total_vertices': 1653,
                 'num_parts': 14
             }
@@ -129,9 +129,14 @@ class CoACDEnv(gym.Env):
         s = np.linalg.norm(pts - c, axis=1).max() + 1e-8
         return ((pts - c) / s).astype(np.float32)
 
-    def _hausdorff_vs_fixed(self, dec_mesh):
+    def _hausdorff_vs_fixed(self, dec_mesh, parts=None):
         """Compute Hausdorff distance against fixed evaluation points"""
-        dec_pts = sample_points(dec_mesh, self.npts, seed=42).astype(np.float32)
+        if parts is not None:
+            # Use enhanced surface-aware sampling for decomposed meshes
+            dec_pts = sample_surface_points_from_parts(parts, self.npts, seed=42, num_angles=500).astype(np.float32)
+        else:
+            # Use regular sampling for single meshes
+            dec_pts = sample_points(dec_mesh, self.npts, seed=42).astype(np.float32)
         dec_pts = torch.from_numpy(dec_pts)[None].to(device)
         return hausdorff(self.eval_src_pts, dec_pts)
 
@@ -162,9 +167,8 @@ class CoACDEnv(gym.Env):
         return reward
     def reset(self, *, seed=None, **kwargs):
         super().reset(seed=seed)
-        self._sample_obs(seed)
         
-        # Return normalized observation
+        # Return normalized observation with consistent sampling
         obs = self._create_observation(self.mesh)
         return obs, {}
 
@@ -259,7 +263,7 @@ class CoACDEnv(gym.Env):
             return obs, reward, terminated, truncated, info
 
         with tic("Hausdorff"):
-            H = self._hausdorff_vs_fixed(dec_mesh)
+            H = self._hausdorff_vs_fixed(dec_mesh, parts)
 
         with tic("assemble reward"):
             V_raw = dec_mesh.vertices.shape[0]
@@ -284,10 +288,11 @@ class CoACDEnv(gym.Env):
             
             if H < _global_best_H:
                 improvement = True
+                old_best_H = _global_best_H
                 _global_best_H = H
                 _global_best_params = self.best_params.copy()
                 print(f"\n🏆 GLOBAL BEST IMPROVEMENT!")
-                print(f"   Hausdorff: {H:.6f} (previous best: {_global_best_H:.6f})")
+                print(f"   Hausdorff: {H:.6f} (previous best: {old_best_H:.6f})")
                 print(f"   Runtime: {runtime:.3f}s (baseline: {self.baseline_metrics['runtime']:.3f}s)")
                 print(f"   Vertices: {V_raw} (baseline: {self.baseline_metrics['total_vertices']})")
                 print(f"   Parts: {num_parts} (baseline: {self.baseline_metrics['num_parts']})")
