@@ -72,7 +72,6 @@ def main():
     cleanup_directory("logs", "training logs directory")
     cleanup_directory("models", "models directory")
     cleanup_directory("visualizations", "visualizations directory")
-    cleanup_directory("point_clouds", "point clouds directory")
     
     # TensorBoard logs
     cleanup_directory("logs/ppo_pointnet", "TensorBoard logs")
@@ -85,10 +84,6 @@ def main():
     cleanup_files("visualizations/*.png", "visualization images")
     cleanup_files("visualizations/*.jpg", "visualization images")
     cleanup_files("visualizations/*.gif", "visualization animations")
-    
-    # Point cloud files
-    cleanup_files("point_clouds/*.ply", "point cloud files")
-    cleanup_files("point_clouds/*.npy", "numpy point cloud files")
     
     # Python cache files
     cleanup_pycache()

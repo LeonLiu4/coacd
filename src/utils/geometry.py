@@ -23,6 +23,19 @@ def sample_points(mesh: trimesh.Trimesh, n_pts: int, seed: int = None) -> np.nda
     return np.ascontiguousarray(pts, dtype=np.float32)
 
 
+def sample_surface_points_from_parts(parts, n_pts: int, seed: int = 42, num_angles: int = 100) -> np.ndarray:
+    """Sample surface points from convex hull parts using raycasting."""
+    return ray_sample_surface(parts, n_pts=n_pts, num_dirs=num_angles, rays_per_dir=100, 
+                             tol=1e-3, seed=seed, outer_mesh=None)
+
+
+def sample_surface_points_consistent(parts, n_pts: int, seed: int = 42) -> np.ndarray:
+    """Sample surface points using the same method as the original mesh for fair comparison."""
+    # Use the same area-uniform sampling as the original mesh
+    mesh = build_combined(parts)
+    return sample_points(mesh, n_pts, seed=seed)
+
+
 def enhanced_viewing_dirs(n: int = 100) -> np.ndarray:
     """Azimuth×altitude grid; for n<=100 defaults to 10×10."""
     grid_size = int(np.sqrt(n))
@@ -57,27 +70,27 @@ def build_combined(parts) -> trimesh.Trimesh:
 
 def first_hits_locations(mesh: trimesh.Trimesh,
                          origins: np.ndarray,
-                         directions: np.ndarray) -> np.ndarray:
-    """Return first-hit locations for each ray; safe fallback if pyembree not available."""
+                         directions: np.ndarray) -> tuple:
+    """Return (locations, ray_indices, distances) for first hits; safe fallback if pyembree not available."""
     try:
         from trimesh.ray.ray_pyembree import RayMeshIntersector
         rmi = RayMeshIntersector(mesh)
-        loc, _, _ = rmi.intersects_location(origins, directions, multiple_hits=False)
-        return loc
+        loc, idx_ray, _ = rmi.intersects_location(origins, directions, multiple_hits=False)
+        if len(loc) == 0:
+            return loc, np.array([], dtype=int), np.array([])
+        # Compute distance along each ray: t = dot(loc - origin[idx], dir[idx])
+        t = np.einsum('ij,ij->i', (loc - origins[idx_ray]), directions[idx_ray])
+        return loc, idx_ray, t
     except Exception:
         loc, idx_ray, _ = mesh.ray.intersects_location(
             ray_origins=origins,
             ray_directions=directions
         )
         if len(loc) == 0:
-            return loc
-        # Keep the closest hit per ray
+            return loc, np.array([], dtype=int), np.array([])
+        # Compute distance along each ray
         t = np.einsum('ij,ij->i', (loc - origins[idx_ray]), directions[idx_ray])
-        order = np.lexsort((t, idx_ray))
-        idx_ray_sorted = idx_ray[order]
-        loc_sorted = loc[order]
-        keep = np.r_[True, idx_ray_sorted[1:] != idx_ray_sorted[:-1]]
-        return loc_sorted[keep]
+        return loc, idx_ray, t
 
 
 def _pose_from_lookat(eye: np.ndarray, target: np.ndarray, up_hint: np.ndarray) -> np.ndarray:
@@ -159,6 +172,8 @@ def backproject_depth_to_points(depth: np.ndarray,
 def ray_sample_surface(parts, n_pts: int = 4096, num_dirs: int = 100, rays_per_dir: int = 4096,
                        tol: float = 1e-3, seed: int = 42, outer_mesh: trimesh.Trimesh = None) -> np.ndarray:
     """Sample surface points from convex hulls with optional outer mesh filtering."""
+    # Set global numpy seed for deterministic behavior
+    np.random.seed(seed)
     rng = np.random.default_rng(seed)
     
     # Convert parts to individual hull meshes
@@ -179,17 +194,22 @@ def ray_sample_surface(parts, n_pts: int = 4096, num_dirs: int = 100, rays_per_d
     dirs = enhanced_viewing_dirs(num_dirs)
     all_points = []
 
+    # Create deterministic grid
     g = int(np.ceil(np.sqrt(rays_per_dir)))
     uv = np.linspace(-1.1, 1.1, g)
     U, V = np.meshgrid(uv, uv, indexing='xy')
     base_grid = np.stack([U.ravel(), V.ravel()], axis=1)
     if len(base_grid) > rays_per_dir:
-        pick = rng.choice(len(base_grid), size=rays_per_dir, replace=False)
-        base_grid = base_grid[pick]
+        # Use deterministic selection instead of random
+        step = len(base_grid) / rays_per_dir
+        indices = np.arange(0, len(base_grid), step, dtype=int)[:rays_per_dir]
+        base_grid = base_grid[indices]
 
+    # Create deterministic rotation matrices
     rotation_matrices = []
-    for _ in range(len(dirs)):
-        theta = rng.uniform(0.0, 2.0 * np.pi)
+    for i in range(len(dirs)):
+        # Use deterministic angle based on index and seed
+        theta = (i * 137.5 + seed * 42) % (2.0 * np.pi)  # Golden angle approximation
         c, s = np.cos(theta), np.sin(theta)
         rotation_matrices.append(np.array([[c, -s], [s, c]], dtype=np.float64))
 
@@ -199,7 +219,10 @@ def ray_sample_surface(parts, n_pts: int = 4096, num_dirs: int = 100, rays_per_d
             break
         d = d / (np.linalg.norm(d) + 1e-12)
         g2 = base_grid @ rotation_matrices[i].T
-        g2 = g2 + 0.01 * rng.standard_normal(size=g2.shape)
+        # Use deterministic noise based on index
+        noise_seed = (seed * 1000 + i * 100) % 2**32
+        np.random.seed(noise_seed)
+        g2 = g2 + 0.01 * np.random.standard_normal(size=g2.shape)
 
         a = np.array([1.0, 0.0, 0.0]) if abs(d[2]) > 0.9 else np.array([0.0, 0.0, 1.0])
         p2 = np.cross(d, a); p2 /= (np.linalg.norm(p2) + 1e-12)
@@ -209,27 +232,39 @@ def ray_sample_surface(parts, n_pts: int = 4096, num_dirs: int = 100, rays_per_d
         directions = np.repeat((-d)[None, :], len(origins), axis=0)
 
         # Find closest hits across all hull meshes
-        closest_hits = []
+        all_idx_ray = []
+        all_t = []
+        all_loc = []
+        
         for hull_mesh in hull_meshes:
             try:
-                loc = first_hits_locations(hull_mesh, origins, directions)
+                loc, idx_ray, t = first_hits_locations(hull_mesh, origins, directions)
                 if len(loc) > 0:
-                    # Calculate distances from origins
-                    distances = np.linalg.norm(loc - origins[:len(loc)], axis=1)
-                    for j, (point, dist) in enumerate(zip(loc, distances)):
-                        closest_hits.append((point, dist, i * rays_per_dir + j))
+                    all_idx_ray.append(idx_ray)
+                    all_t.append(t)
+                    all_loc.append(loc)
             except Exception:
                 continue
 
-        # Keep only the closest hit for each ray
-        if closest_hits:
-            closest_hits.sort(key=lambda x: x[1])  # Sort by distance
-            seen_rays = set()
-            for point, dist, ray_idx in closest_hits:
-                if ray_idx not in seen_rays:
-                    all_points.append(point)
-                    seen_rays.add(ray_idx)
-                    total_points += 1
+        # Combine all hits and find closest per ray
+        if all_idx_ray:
+            # Concatenate all hits from all hulls
+            idx_ray = np.concatenate(all_idx_ray)
+            t = np.concatenate(all_t)
+            loc = np.concatenate(all_loc)
+            
+            # Keep the nearest hit per ray
+            order = np.lexsort((t, idx_ray))  # sort by ray_idx then t
+            idx_ray = idx_ray[order]
+            t = t[order]
+            loc = loc[order]
+            
+            # Keep only the first (closest) hit for each ray
+            keep = np.r_[True, idx_ray[1:] != idx_ray[:-1]]
+            closest_loc = loc[keep]
+            
+            all_points.extend(closest_loc)
+            total_points += len(closest_loc)
 
     if not all_points:
         if outer_mesh is not None:
@@ -265,9 +300,12 @@ def ray_sample_surface(parts, n_pts: int = 4096, num_dirs: int = 100, rays_per_d
         indices = np.arange(0, len(pts), step, dtype=int)[:n_pts]
         pts = pts[indices]
     else:
+        # Use deterministic sampling for fallback
         if outer_mesh is not None:
+            np.random.seed(seed)  # Ensure deterministic fallback
             extra = outer_mesh.sample(n_pts - len(pts))
         else:
+            np.random.seed(seed)  # Ensure deterministic fallback
             extra = mesh.sample(n_pts - len(pts))
         pts = np.vstack([pts, extra])
 

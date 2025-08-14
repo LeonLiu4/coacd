@@ -59,7 +59,8 @@ def run_baseline_coacd(mesh_path: str, output_file: str = "baseline_metrics.json
             mcts_max_depth=default_params['mcts_max_depth'],
             pca=default_params['pca'],
             merge=default_params['merge'],
-            decimate=default_params['decimate']
+            decimate=default_params['decimate'],
+            seed=42  # Fixed seed for deterministic results
         )
         runtime = time.time() - start_time
         success = True

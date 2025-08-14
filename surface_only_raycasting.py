@@ -148,6 +148,8 @@ def main():
         pts = ray_sample_surface(parts, n_pts=args.points, num_dirs=args.dirs,
                                  rays_per_dir=args.rays_per_dir, tol=args.tol, seed=args.seed,
                                  outer_mesh=base_mesh)
+        
+
 
     print(f"Collected {len(pts)} points on outer surface")
 

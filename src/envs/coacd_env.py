@@ -43,6 +43,7 @@ def _coacd_worker(queue: Queue, mesh, threshold: float, merge: bool, max_hull: i
             threshold=threshold,
             merge=merge,
             max_convex_hull=max_hull,
+            seed=42,  # Fixed seed for deterministic results
         )
 
     queue.put(parts)
@@ -65,11 +66,13 @@ class CoACDEnv(gym.Env):
 
         self.baseline_metrics = self._load_baseline_metrics(baseline_file)
         
+        # Updated reward coefficients based on the new baseline
+        # Baseline: hausdorff=0.065965, runtime=7.320s, vertices=1653, parts=14
         self.reward_coefficients = {
-            'hausdorff': 10.0,
-            'runtime': 1.0,
-            'vertices': 0.001,
-            'num_parts': 0.1
+            'hausdorff': 15.0,  # Increased weight for hausdorff improvement
+            'runtime': 0.5,     # Reduced weight for runtime (already quite fast)
+            'vertices': 0.002,  # Increased weight for vertex reduction
+            'num_parts': 0.2    # Increased weight for part reduction
         }
 
         self.observation_space = spaces.Box(-1.0, 1.0, (npts, 3), np.float32)
@@ -94,16 +97,16 @@ class CoACDEnv(gym.Env):
             else:
                 print(f"Warning: Baseline file {baseline_file} not found. Using fallback values.")
                 return {
-                    'hausdorff_distance': 0.05755118280649185,
-                    'runtime': 6.411757946014404,
+                    'hausdorff_distance': 0.06219285726547241,
+                    'runtime': 6.612283945083618,
                     'total_vertices': 1653,
                     'num_parts': 14
                 }
         except Exception as e:
             print(f"Error loading baseline metrics: {e}")
             return {
-                'hausdorff_distance': 0.05755118280649185,
-                'runtime': 6.411757946014404,
+                'hausdorff_distance': 0.06219285726547241,
+                'runtime': 6.612283945083618,
                 'total_vertices': 1653,
                 'num_parts': 14
             }
@@ -113,6 +116,16 @@ class CoACDEnv(gym.Env):
         np.random.seed(seed)
         pts = sample_points(self.mesh, self.npts)
         self.eval_src_pts = torch.as_tensor(pts, dtype=torch.float32)[None].to(device)
+
+    def get_baseline_summary(self):
+        """Return a summary of the current baseline metrics."""
+        baseline = self.baseline_metrics
+        return {
+            'hausdorff': baseline['hausdorff_distance'],
+            'runtime': baseline['runtime'],
+            'vertices': baseline['total_vertices'],
+            'num_parts': baseline['num_parts']
+        }
 
     def _sample_obs(self, seed: int | None = None):
         """Sample points from the original mesh for observation"""
@@ -132,7 +145,7 @@ class CoACDEnv(gym.Env):
     def _hausdorff_vs_fixed(self, dec_mesh, parts=None):
         """Compute Hausdorff distance against fixed evaluation points"""
         if parts is not None:
-            # Use enhanced surface-aware sampling for decomposed meshes
+            # Use ray-based sampling to get outer surface points (same as surface_only_raycasting.py)
             dec_pts = sample_surface_points_from_parts(parts, self.npts, seed=42, num_angles=500).astype(np.float32)
         else:
             # Use regular sampling for single meshes
@@ -144,27 +157,32 @@ class CoACDEnv(gym.Env):
         """Calculate reward based on comparison with baseline metrics."""
         baseline = self.baseline_metrics
         
+        # Check if all metrics are better than baseline
         hausdorff_better = hausdorff_dist < baseline['hausdorff_distance']
         runtime_better = runtime < baseline['runtime']
         vertices_better = vertices < baseline['total_vertices']
         parts_better = num_parts <= baseline['num_parts']
         
-        if not (hausdorff_better and runtime_better and vertices_better and parts_better):
-            return -1.0
+        # Calculate improvement percentages
+        hausdorff_improvement = (baseline['hausdorff_distance'] - hausdorff_dist) / baseline['hausdorff_distance']
+        runtime_improvement = (baseline['runtime'] - runtime) / baseline['runtime']
+        vertices_improvement = (baseline['total_vertices'] - vertices) / baseline['total_vertices']
+        parts_improvement = max(0, (baseline['num_parts'] - num_parts) / baseline['num_parts'])
         
-        hausdorff_delta = baseline['hausdorff_distance'] - hausdorff_dist
-        runtime_delta = baseline['runtime'] - runtime
-        vertices_delta = baseline['total_vertices'] - vertices
-        parts_delta = max(0, baseline['num_parts'] - num_parts)
-        
-        reward = (
-            self.reward_coefficients['hausdorff'] * hausdorff_delta +
-            self.reward_coefficients['runtime'] * runtime_delta +
-            self.reward_coefficients['vertices'] * vertices_delta +
-            self.reward_coefficients['num_parts'] * parts_delta
-        )
-        
-        return reward
+        # Base reward: positive if all metrics are better, negative otherwise
+        if hausdorff_better and runtime_better and vertices_better and parts_better:
+            # Reward based on percentage improvements
+            reward = (
+                self.reward_coefficients['hausdorff'] * hausdorff_improvement +
+                self.reward_coefficients['runtime'] * runtime_improvement +
+                self.reward_coefficients['vertices'] * vertices_improvement +
+                self.reward_coefficients['num_parts'] * parts_improvement
+            )
+            return max(0.1, reward)  # Minimum positive reward for improvements
+        else:
+            # Penalty based on how many metrics are worse
+            worse_count = sum([not hausdorff_better, not runtime_better, not vertices_better, not parts_better])
+            return -worse_count * 0.5  # Graduated penalty
     def reset(self, *, seed=None, **kwargs):
         super().reset(seed=seed)
         
