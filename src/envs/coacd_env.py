@@ -146,7 +146,7 @@ class CoACDEnv(gym.Env):
         """Compute Hausdorff distance against fixed evaluation points"""
         if parts is not None:
             # Use ray-based sampling to get outer surface points (same as surface_only_raycasting.py)
-            dec_pts = sample_surface_points_from_parts(parts, self.npts, seed=42, num_angles=500).astype(np.float32)
+            dec_pts = sample_surface_points_from_parts(parts, self.npts, seed=42, num_angles=100).astype(np.float32)
         else:
             # Use regular sampling for single meshes
             dec_pts = sample_points(dec_mesh, self.npts, seed=42).astype(np.float32)

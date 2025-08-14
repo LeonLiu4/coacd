@@ -24,6 +24,7 @@ from src.utils.geometry import (
     ray_sample_surface,
 )
 
+
 def render_depth_packets(mesh: trimesh.Trimesh,
                          directions: np.ndarray,
                          resolution: int = 512,
@@ -141,13 +142,11 @@ def main():
     if args.rays_fallback:
         print("Using legacy ray sampler...")
         pts = ray_sample_surface(parts, n_pts=args.points, num_dirs=args.dirs,
-                                 rays_per_dir=args.rays_per_dir, tol=args.tol, seed=args.seed,
-                                 outer_mesh=base_mesh)
+                                 rays_per_dir=args.rays_per_dir, tol=args.tol, seed=args.seed)
     else:
-        print("Sampling outer surface via first-hit rays (filtered by original mesh)...")
+        print("Sampling outer surface via first-hit rays...")
         pts = ray_sample_surface(parts, n_pts=args.points, num_dirs=args.dirs,
-                                 rays_per_dir=args.rays_per_dir, tol=args.tol, seed=args.seed,
-                                 outer_mesh=base_mesh)
+                                 rays_per_dir=args.rays_per_dir, tol=args.tol, seed=args.seed)
         
 
 

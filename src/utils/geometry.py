@@ -26,14 +26,10 @@ def sample_points(mesh: trimesh.Trimesh, n_pts: int, seed: int = None) -> np.nda
 def sample_surface_points_from_parts(parts, n_pts: int, seed: int = 42, num_angles: int = 100) -> np.ndarray:
     """Sample surface points from convex hull parts using raycasting."""
     return ray_sample_surface(parts, n_pts=n_pts, num_dirs=num_angles, rays_per_dir=100, 
-                             tol=1e-3, seed=seed, outer_mesh=None)
+                             tol=1e-3, seed=seed)
 
 
-def sample_surface_points_consistent(parts, n_pts: int, seed: int = 42) -> np.ndarray:
-    """Sample surface points using the same method as the original mesh for fair comparison."""
-    # Use the same area-uniform sampling as the original mesh
-    mesh = build_combined(parts)
-    return sample_points(mesh, n_pts, seed=seed)
+
 
 
 def enhanced_viewing_dirs(n: int = 100) -> np.ndarray:
@@ -91,6 +87,7 @@ def first_hits_locations(mesh: trimesh.Trimesh,
         # Compute distance along each ray
         t = np.einsum('ij,ij->i', (loc - origins[idx_ray]), directions[idx_ray])
         return loc, idx_ray, t
+
 
 
 def _pose_from_lookat(eye: np.ndarray, target: np.ndarray, up_hint: np.ndarray) -> np.ndarray:
@@ -169,27 +166,27 @@ def backproject_depth_to_points(depth: np.ndarray,
     return np.ascontiguousarray(pts.astype(np.float32))
 
 
+import numpy as np
+
 def ray_sample_surface(parts, n_pts: int = 4096, num_dirs: int = 100, rays_per_dir: int = 4096,
-                       tol: float = 1e-3, seed: int = 42, outer_mesh: trimesh.Trimesh = None) -> np.ndarray:
-    """Sample surface points from convex hulls with optional outer mesh filtering."""
+                       tol: float = 1e-3, seed: int = 42) -> np.ndarray:
+    """Sample surface points from convex hulls using raycasting."""
     # Set global numpy seed for deterministic behavior
     np.random.seed(seed)
     rng = np.random.default_rng(seed)
     
-    # Convert parts to individual hull meshes
-    hull_meshes = [trimesh.Trimesh(vertices=v, faces=f, process=False) for v, f in parts]
-    
-    # Bounds
-    if outer_mesh is not None:
-        mesh = outer_mesh
-    else:
-        mesh = build_combined(parts)
+    # Combine all convex hulls into a single mesh
+    mesh = build_combined(parts)
     
     bbmin, bbmax = mesh.bounds
     center = 0.5 * (bbmin + bbmax)
     extent = (bbmax - bbmin)
     R = float(np.linalg.norm(extent))
     side = 1.25 * float(np.max(extent))
+
+    # Bounding-sphere based outward push (core fix support)
+    R_sphere = 0.5 * float(np.linalg.norm(extent)) * np.sqrt(3.0)  # circumscribes AABB
+    margin = 0.5 * float(np.linalg.norm(extent))
 
     dirs = enhanced_viewing_dirs(num_dirs)
     all_points = []
@@ -228,68 +225,45 @@ def ray_sample_surface(parts, n_pts: int = 4096, num_dirs: int = 100, rays_per_d
         p2 = np.cross(d, a); p2 /= (np.linalg.norm(p2) + 1e-12)
         p1 = np.cross(p2, d); p1 /= (np.linalg.norm(p1) + 1e-12)
 
-        origins = center + d * (2.0 * R) + side * (g2[:, 0:1] * p1 + g2[:, 1:2] * p2)
-        directions = np.repeat((-d)[None, :], len(origins), axis=0)
+        # --- core origin fix: place on plane, then push outward along ±d ---
+        plane_pts = center + side * (g2[:, 0:1] * p1 + g2[:, 1:2] * p2)
 
-        # Find closest hits across all hull meshes
-        all_idx_ray = []
-        all_t = []
-        all_loc = []
-        
-        for hull_mesh in hull_meshes:
-            try:
-                loc, idx_ray, t = first_hits_locations(hull_mesh, origins, directions)
-                if len(loc) > 0:
-                    all_idx_ray.append(idx_ray)
-                    all_t.append(t)
-                    all_loc.append(loc)
-            except Exception:
-                continue
+        # Cast from +d side shooting inward (-d)
+        origins_1 = plane_pts + d * (R_sphere + margin)
+        dirs_1 = np.repeat((-d)[None, :], len(origins_1), axis=0)
 
-        # Combine all hits and find closest per ray
-        if all_idx_ray:
-            # Concatenate all hits from all hulls
-            idx_ray = np.concatenate(all_idx_ray)
-            t = np.concatenate(all_t)
-            loc = np.concatenate(all_loc)
-            
-            # Keep the nearest hit per ray
-            order = np.lexsort((t, idx_ray))  # sort by ray_idx then t
-            idx_ray = idx_ray[order]
-            t = t[order]
-            loc = loc[order]
-            
-            # Keep only the first (closest) hit for each ray
-            keep = np.r_[True, idx_ray[1:] != idx_ray[:-1]]
-            closest_loc = loc[keep]
-            
-            all_points.extend(closest_loc)
-            total_points += len(closest_loc)
+        # Cast from -d side shooting inward (+d)  <-- handles backface culling / flipped normals
+        origins_2 = plane_pts - d * (R_sphere + margin)
+        dirs_2 = np.repeat((d)[None, :], len(origins_2), axis=0)
+
+        # Raycast against the combined convex hull mesh
+        try:
+            loc1, idx1, t1 = first_hits_locations(mesh, origins_1, dirs_1)
+            if len(loc1) > 0:
+                t1 = np.asarray(t1)
+                keep1 = t1 > 1e-8
+                if np.any(keep1):
+                    all_points.extend(np.asarray(loc1)[keep1])
+                    total_points += int(np.count_nonzero(keep1))
+        except Exception:
+            pass
+
+        try:
+            loc2, idx2, t2 = first_hits_locations(mesh, origins_2, dirs_2)
+            if len(loc2) > 0:
+                t2 = np.asarray(t2)
+                keep2 = t2 > 1e-8
+                if np.any(keep2):
+                    all_points.extend(np.asarray(loc2)[keep2])
+                    total_points += int(np.count_nonzero(keep2))
+        except Exception:
+            pass
 
     if not all_points:
-        if outer_mesh is not None:
-            return np.ascontiguousarray(outer_mesh.sample(n_pts).astype(np.float32))
-        else:
-            return np.ascontiguousarray(mesh.sample(n_pts).astype(np.float32))
+        return np.ascontiguousarray(mesh.sample(n_pts).astype(np.float32))
 
     pts = np.vstack(all_points)
     
-    # Apply outer-surface filter if outer_mesh is provided
-    if outer_mesh is not None:
-        try:
-            from trimesh.proximity import signed_distance
-            sd = signed_distance(outer_mesh, pts)
-            keep = np.abs(sd) <= tol
-            pts = pts[keep]
-        except Exception:
-            try:
-                from trimesh.proximity import closest_point
-                closest, distances, _ = closest_point(outer_mesh, pts)
-                keep = distances <= tol
-                pts = pts[keep]
-            except Exception:
-                pass  # Keep all points if filtering fails
-
     # Deduplicate
     q = np.round(pts / tol).astype(np.int64)
     _, unique_idx = np.unique(q, axis=0, return_index=True)
@@ -301,12 +275,8 @@ def ray_sample_surface(parts, n_pts: int = 4096, num_dirs: int = 100, rays_per_d
         pts = pts[indices]
     else:
         # Use deterministic sampling for fallback
-        if outer_mesh is not None:
-            np.random.seed(seed)  # Ensure deterministic fallback
-            extra = outer_mesh.sample(n_pts - len(pts))
-        else:
-            np.random.seed(seed)  # Ensure deterministic fallback
-            extra = mesh.sample(n_pts - len(pts))
+        np.random.seed(seed)  # Ensure deterministic fallback
+        extra = mesh.sample(n_pts - len(pts))
         pts = np.vstack([pts, extra])
 
     return np.ascontiguousarray(pts.astype(np.float32))
