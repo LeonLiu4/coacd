@@ -12,7 +12,7 @@ import torch
 import trimesh
 import coacd
 
-from src.utils.geometry import sample_points, hausdorff, sample_surface_points_from_parts
+from src.utils.geometry import sample_points, hausdorff, sample_surface_points_from_parts, sample_surface_points_from_parts_fast
 
 
 @contextmanager
@@ -97,17 +97,17 @@ class CoACDEnv(gym.Env):
             else:
                 print(f"Warning: Baseline file {baseline_file} not found. Using fallback values.")
                 return {
-                    'hausdorff_distance': 0.06219285726547241,
-                    'runtime': 6.612283945083618,
-                    'total_vertices': 1653,
+                    'hausdorff_distance': 0.0040727704763412476,
+                    'runtime': 6.211418867111206,
+                    'total_vertices': 1592,
                     'num_parts': 14
                 }
         except Exception as e:
             print(f"Error loading baseline metrics: {e}")
             return {
-                'hausdorff_distance': 0.06219285726547241,
-                'runtime': 6.612283945083618,
-                'total_vertices': 1653,
+                'hausdorff_distance': 0.0040727704763412476,
+                'runtime': 6.211418867111206,
+                'total_vertices': 1592,
                 'num_parts': 14
             }
 
@@ -145,8 +145,8 @@ class CoACDEnv(gym.Env):
     def _hausdorff_vs_fixed(self, dec_mesh, parts=None):
         """Compute Hausdorff distance against fixed evaluation points"""
         if parts is not None:
-            # Use ray-based sampling to get outer surface points (same as surface_only_raycasting.py)
-            dec_pts = sample_surface_points_from_parts(parts, self.npts, seed=42, num_angles=100).astype(np.float32)
+            # Use fast depth-based sampling for training with 25 camera angles
+            dec_pts = sample_surface_points_from_parts_fast(parts, self.npts, seed=42, num_angles=25).astype(np.float32)
         else:
             # Use regular sampling for single meshes
             dec_pts = sample_points(dec_mesh, self.npts, seed=42).astype(np.float32)
@@ -154,24 +154,25 @@ class CoACDEnv(gym.Env):
         return hausdorff(self.eval_src_pts, dec_pts)
 
     def _calculate_comparative_reward(self, hausdorff_dist, runtime, vertices, num_parts):
-        """Calculate reward based on comparison with baseline metrics."""
+        """Calculate reward based on comparison with baseline metrics with 1.5x relaxation."""
         baseline = self.baseline_metrics
+        relaxation_factor = 1.5
         
-        # Check if all metrics are better than baseline
-        hausdorff_better = hausdorff_dist < baseline['hausdorff_distance']
-        runtime_better = runtime < baseline['runtime']
-        vertices_better = vertices < baseline['total_vertices']
-        parts_better = num_parts <= baseline['num_parts']
+        # Check if all metrics are better than baseline * 1.5 (less strict)
+        hausdorff_better = hausdorff_dist < baseline['hausdorff_distance'] * relaxation_factor
+        runtime_better = runtime < baseline['runtime'] * relaxation_factor
+        vertices_better = vertices < baseline['total_vertices'] * relaxation_factor
+        parts_better = num_parts <= baseline['num_parts'] * relaxation_factor
         
-        # Calculate improvement percentages
-        hausdorff_improvement = (baseline['hausdorff_distance'] - hausdorff_dist) / baseline['hausdorff_distance']
-        runtime_improvement = (baseline['runtime'] - runtime) / baseline['runtime']
-        vertices_improvement = (baseline['total_vertices'] - vertices) / baseline['total_vertices']
-        parts_improvement = max(0, (baseline['num_parts'] - num_parts) / baseline['num_parts'])
+        # Calculate improvement percentages against relaxed baseline
+        hausdorff_improvement = (baseline['hausdorff_distance'] * relaxation_factor - hausdorff_dist) / (baseline['hausdorff_distance'] * relaxation_factor)
+        runtime_improvement = (baseline['runtime'] * relaxation_factor - runtime) / (baseline['runtime'] * relaxation_factor)
+        vertices_improvement = (baseline['total_vertices'] * relaxation_factor - vertices) / (baseline['total_vertices'] * relaxation_factor)
+        parts_improvement = max(0, (baseline['num_parts'] * relaxation_factor - num_parts) / (baseline['num_parts'] * relaxation_factor))
         
-        # Base reward: positive if all metrics are better, negative otherwise
+        # Base reward: positive if all metrics are better than relaxed baseline, negative otherwise
         if hausdorff_better and runtime_better and vertices_better and parts_better:
-            # Reward based on percentage improvements
+            # Reward based on percentage improvements against relaxed baseline
             reward = (
                 self.reward_coefficients['hausdorff'] * hausdorff_improvement +
                 self.reward_coefficients['runtime'] * runtime_improvement +
@@ -180,7 +181,7 @@ class CoACDEnv(gym.Env):
             )
             return max(0.1, reward)  # Minimum positive reward for improvements
         else:
-            # Penalty based on how many metrics are worse
+            # Penalty based on how many metrics are worse than relaxed baseline
             worse_count = sum([not hausdorff_better, not runtime_better, not vertices_better, not parts_better])
             return -worse_count * 0.5  # Graduated penalty
     def reset(self, *, seed=None, **kwargs):
@@ -316,8 +317,8 @@ class CoACDEnv(gym.Env):
                 print(f"   Parts: {num_parts} (baseline: {self.baseline_metrics['num_parts']})")
                 print(f"   Parameters: threshold={threshold:.3f}, no_merge={no_merge}, max_hull={max_hull}")
             
-            success = (H < self.baseline_metrics['hausdorff_distance'] * 0.5 and 
-                      runtime < self.baseline_metrics['runtime'] * 0.8)
+            success = (H < self.baseline_metrics['hausdorff_distance'] * 0.75 and 
+                      runtime < self.baseline_metrics['runtime'] * 1.2)
             if success:
                 reward += 10.0
                 terminated = True

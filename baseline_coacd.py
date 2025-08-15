@@ -7,7 +7,7 @@ import json
 import coacd
 import trimesh
 import numpy as np
-from src.utils.geometry import hausdorff, sample_points, sample_surface_points_from_parts
+from src.utils.geometry import hausdorff, sample_points, sample_surface_points_from_parts, sample_surface_points_from_parts_fast
 import torch
 
 
@@ -97,8 +97,9 @@ def run_baseline_coacd(mesh_path: str, output_file: str = "baseline_metrics.json
             fixed_eval_pts = sample_points(mesh, 4096)
             fixed_eval_tensor = torch.from_numpy(fixed_eval_pts).unsqueeze(0)
             
-            # Sample reconstructed points using the new surface-only approach for consistency
-            reconstructed_pts = sample_surface_points_from_parts(parts, 4096, seed=42, num_angles=500)
+            # Sample reconstructed points using the fast surface-only approach for consistency
+            # Use 25 camera angles to match the training environment
+            reconstructed_pts = sample_surface_points_from_parts_fast(parts, 4096, seed=42, num_angles=25)
             reconstructed_tensor = torch.from_numpy(reconstructed_pts).unsqueeze(0)
             
             hausdorff_dist = hausdorff(fixed_eval_tensor, reconstructed_tensor)

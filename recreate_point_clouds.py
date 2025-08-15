@@ -47,8 +47,8 @@ def recreate_point_clouds():
     os.makedirs('point_clouds', exist_ok=True)
     
     # Save as PLY files
-    baseline_ply_path = 'point_clouds/baseline_14parts_raycast.ply'
-    three_part_ply_path = 'point_clouds/three_part_raycast.ply'
+    baseline_ply_path = 'point_clouds/baseline_14parts_depth.ply'
+    three_part_ply_path = 'point_clouds/three_part_depth.ply'
     
     # Create PLY files with point cloud data
     def save_ply(points, filename):
@@ -71,8 +71,8 @@ def recreate_point_clouds():
     save_ply(three_points, three_part_ply_path)
     
     # Also save as numpy arrays for convenience
-    baseline_npy_path = 'point_clouds/baseline_14parts_raycast.npy'
-    three_part_npy_path = 'point_clouds/three_part_raycast.npy'
+    baseline_npy_path = 'point_clouds/baseline_14parts_depth.npy'
+    three_part_npy_path = 'point_clouds/three_part_depth.npy'
     
     np.save(baseline_npy_path, baseline_points)
     np.save(three_part_npy_path, three_points)
