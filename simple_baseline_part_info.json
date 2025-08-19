@@ -1,0 +1,86 @@
+[
+  {
+    "part_id": 0,
+    "vertices": 118,
+    "faces": 232,
+    "points_sampled": 293
+  },
+  {
+    "part_id": 1,
+    "vertices": 57,
+    "faces": 110,
+    "points_sampled": 293
+  },
+  {
+    "part_id": 2,
+    "vertices": 76,
+    "faces": 148,
+    "points_sampled": 293
+  },
+  {
+    "part_id": 3,
+    "vertices": 152,
+    "faces": 300,
+    "points_sampled": 293
+  },
+  {
+    "part_id": 4,
+    "vertices": 58,
+    "faces": 112,
+    "points_sampled": 293
+  },
+  {
+    "part_id": 5,
+    "vertices": 105,
+    "faces": 206,
+    "points_sampled": 293
+  },
+  {
+    "part_id": 6,
+    "vertices": 69,
+    "faces": 134,
+    "points_sampled": 293
+  },
+  {
+    "part_id": 7,
+    "vertices": 180,
+    "faces": 356,
+    "points_sampled": 293
+  },
+  {
+    "part_id": 8,
+    "vertices": 288,
+    "faces": 572,
+    "points_sampled": 292
+  },
+  {
+    "part_id": 9,
+    "vertices": 151,
+    "faces": 298,
+    "points_sampled": 292
+  },
+  {
+    "part_id": 10,
+    "vertices": 106,
+    "faces": 208,
+    "points_sampled": 292
+  },
+  {
+    "part_id": 11,
+    "vertices": 143,
+    "faces": 282,
+    "points_sampled": 292
+  },
+  {
+    "part_id": 12,
+    "vertices": 83,
+    "faces": 162,
+    "points_sampled": 292
+  },
+  {
+    "part_id": 13,
+    "vertices": 6,
+    "faces": 8,
+    "points_sampled": 292
+  }
+]

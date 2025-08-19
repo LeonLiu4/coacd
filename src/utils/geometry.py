@@ -10,9 +10,37 @@ import pymeshlab
 @torch.no_grad()
 def hausdorff(a_pts: torch.Tensor, b_pts: torch.Tensor) -> float:
     """Symmetric Hausdorff distance between (1,N,3) and (1,M,3) tensors."""
-    d_ab = knn_points(a_pts, b_pts, K=1).dists.squeeze(-1).max()
-    d_ba = knn_points(b_pts, a_pts, K=1).dists.squeeze(-1).max()
-    return max(d_ab, d_ba).item()
+    print(f"DEBUG: hausdorff called with shapes {a_pts.shape}, {b_pts.shape}")
+    try:
+        # Check for empty or invalid point clouds
+        if a_pts.shape[1] == 0 or b_pts.shape[1] == 0:
+            print("Warning: Empty point cloud in Hausdorff calculation")
+            return 10.0  # Use max_H instead of infinity
+        
+        # Check for NaN or inf values
+        if torch.isnan(a_pts).any() or torch.isinf(a_pts).any():
+            print("Warning: NaN/inf values in first point cloud")
+            return 10.0  # Use max_H instead of infinity
+        
+        if torch.isnan(b_pts).any() or torch.isinf(b_pts).any():
+            print("Warning: NaN/inf values in second point cloud")
+            return 10.0  # Use max_H instead of infinity
+        
+        d_ab = knn_points(a_pts, b_pts, K=1).dists.squeeze(-1).max()
+        d_ba = knn_points(b_pts, a_pts, K=1).dists.squeeze(-1).max()
+        
+        result = max(d_ab, d_ba).item()
+        
+        # Check for invalid result
+        if np.isnan(result) or np.isinf(result):
+            print(f"Warning: Invalid Hausdorff result: {result}")
+            return 10.0  # Use max_H instead of infinity
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error in Hausdorff calculation: {e}")
+        return 10.0  # Use max_H instead of infinity
 
 
 def sample_points(mesh: trimesh.Trimesh, n_pts: int, seed: int = None) -> np.ndarray:
@@ -38,7 +66,12 @@ def simplify_point_cloud_meshlab(points: np.ndarray, target_points: int = 100000
         Simplified point cloud as numpy array (target_points, 3)
     """
     try:
-        print(f"Simplifying {len(points)} points to {target_points} points using uniform grid sampling...")
+        print(f"Processing {len(points)} points to get {target_points} uniform points...")
+        
+        # If we have too few points, just return what we have
+        if len(points) < target_points:
+            print(f"Not enough points ({len(points)}), returning all available")
+            return points.astype(np.float32)
         
         # Calculate bounding box
         min_coords = np.min(points, axis=0)
@@ -96,10 +129,50 @@ def sample_surface_points_from_parts(parts, n_pts: int, seed: int = 42, num_angl
 
 def sample_surface_points_from_parts_fast(parts, n_pts: int, seed: int = 42, num_angles: int = 25) -> np.ndarray:
     """Fast sampling for training - optimized for speed with lower resolution and efficient parameters."""
-    return sample_surface_points_via_depth(parts, n_pts=n_pts, num_dirs=num_angles,
-                                          resolution=512, yfov_deg=60.0,  # Lower resolution for speed
-                                          tol=1e-2, seed=seed, save_debug=False,  # Higher tolerance for speed
-                                          use_meshlab_simplification=False)  # Skip MeshLab for speed
+    print(f"DEBUG: BREAKPOINT 1 - sample_surface_points_from_parts_fast - {len(parts)} parts, {n_pts} points, {num_angles} angles")
+    
+    # Validate input parts
+    if not parts or len(parts) == 0:
+        print("ERROR: No parts provided to sample_surface_points_from_parts_fast")
+        raise ValueError("No parts provided")
+    
+    # Validate each part
+    for i, (verts, faces) in enumerate(parts):
+        if len(verts) == 0 or len(faces) == 0:
+            print(f"ERROR: Part {i} is empty (verts={len(verts)}, faces={len(faces)})")
+            raise ValueError(f"Part {i} is empty")
+        if np.any(np.isnan(verts)) or np.any(np.isinf(verts)):
+            print(f"ERROR: Part {i} contains NaN/Inf vertices")
+            raise ValueError(f"Part {i} contains NaN/Inf vertices")
+    
+    try:
+        # For 100k points, use a more efficient strategy
+        if n_pts >= 50000:
+            # Use lower resolution and sample fewer points per view, then upsample
+            print("DEBUG: Using 100k+ point strategy with 256x256 resolution")
+            result = sample_surface_points_via_depth(parts, n_pts=n_pts, num_dirs=num_angles,
+                                                  resolution=256, yfov_deg=60.0,  # Even lower resolution for speed
+                                                  tol=1e-2, seed=seed, save_debug=False,  # Higher tolerance for speed
+                                                  use_meshlab_simplification=True)  # Enable MeshLab for 100k points
+        else:
+            # For smaller point counts, use the standard approach
+            print("DEBUG: Using standard strategy with 512x512 resolution")
+            result = sample_surface_points_via_depth(parts, n_pts=n_pts, num_dirs=num_angles,
+                                                  resolution=512, yfov_deg=60.0,  # Lower resolution for speed
+                                                  tol=1e-2, seed=seed, save_debug=False,  # Higher tolerance for speed
+                                                  use_meshlab_simplification=True)  # Enable MeshLab for 100k points
+        
+        print(f"DEBUG: sample_surface_points_from_parts_fast completed - {len(result)} points")
+        return result
+        
+    except Exception as e:
+        print(f"ERROR: sample_surface_points_from_parts_fast failed: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fallback to simple sampling
+        print("DEBUG: Using fallback simple sampling in fast function")
+        combined_mesh = build_combined(parts)
+        return sample_points(combined_mesh, n_pts, seed)
 
 
 def sample_surface_points_via_depth(parts,
@@ -112,12 +185,26 @@ def sample_surface_points_via_depth(parts,
                                     save_debug: bool = False,
                                     use_meshlab_simplification: bool = True) -> np.ndarray:
     """Depth-based sampling on the combined convex hulls using depth map backprojection."""
+    print(f"DEBUG: BREAKPOINT 2 - sample_surface_points_via_depth - {len(parts)} parts, {n_pts} points, {num_dirs} dirs, {resolution}x{resolution}")
+    
     np.random.seed(seed)  # Ensure deterministic behavior
     
-    mesh = build_combined(parts)
-    directions = enhanced_viewing_dirs(num_dirs)
-    
-    print(f"Rendering depth maps from {num_dirs} directions at {resolution}x{resolution} resolution...")
+    try:
+        mesh = build_combined(parts)
+        print(f"DEBUG: Combined mesh - {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
+        
+        directions = enhanced_viewing_dirs(num_dirs)
+        print(f"DEBUG: Generated {len(directions)} viewing directions")
+        
+        print(f"Rendering depth maps from {num_dirs} directions at {resolution}x{resolution} resolution...")
+    except Exception as e:
+        print(f"ERROR: Failed to build combined mesh or generate directions: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fallback to simple sampling
+        print("DEBUG: Using fallback simple sampling due to mesh building failure")
+        combined_mesh = build_combined(parts)
+        return sample_points(combined_mesh, n_pts, seed)
     
     # Create debug output directory if requested
     if save_debug:
@@ -128,8 +215,13 @@ def sample_surface_points_via_depth(parts,
     # Calculate stride for efficient sampling
     # For training: use larger stride to sample fewer points per view
     if num_dirs <= 25:  # Training mode
-        per_view_target = max(100, int(np.ceil(n_pts / max(1, num_dirs))))
-        stride_guess = max(4, int(np.sqrt((resolution * resolution) / (per_view_target * 2.0))))
+        if n_pts >= 50000:
+            # For large point counts, sample much fewer points per view and let MeshLab handle upsampling
+            per_view_target = max(50, int(np.ceil(5000 / max(1, num_dirs))))  # Cap at ~5k total for speed
+            stride_guess = max(16, int(np.sqrt((resolution * resolution) / (per_view_target * 4.0))))
+        else:
+            per_view_target = max(100, int(np.ceil(n_pts / max(1, num_dirs))))
+            stride_guess = max(4, int(np.sqrt((resolution * resolution) / (per_view_target * 2.0))))
     else:  # High-quality mode
         per_view_target = max(256, int(np.ceil(n_pts / max(1, num_dirs))))
         stride_guess = max(1, int(np.sqrt((resolution * resolution) / (per_view_target * 1.25))))
@@ -212,7 +304,31 @@ def sample_surface_points_via_depth(parts,
         print(f"  - points_view_XXX.ply: Point clouds from each view")
         print(f"  - camera_info_XXX.npz: Camera parameters for each view")
     
-    return np.ascontiguousarray(pts.astype(np.float32))
+    print(f"DEBUG: sample_surface_points_via_depth returning {len(pts)} points")
+    print(f"DEBUG: Final point cloud bounds - min={np.min(pts, axis=0)}, max={np.max(pts, axis=0)}")
+    
+    result = np.ascontiguousarray(pts.astype(np.float32))
+    
+    # Final validation
+    if len(result) == 0:
+        print("ERROR: sample_surface_points_via_depth returned empty point cloud!")
+        # Fallback to simple sampling
+        print("DEBUG: Using fallback simple sampling due to empty result")
+        return sample_points(mesh, n_pts, seed)
+    
+    if np.any(np.isnan(result)):
+        print("ERROR: sample_surface_points_via_depth returned NaN values!")
+        # Fallback to simple sampling
+        print("DEBUG: Using fallback simple sampling due to NaN values")
+        return sample_points(mesh, n_pts, seed)
+    
+    if np.any(np.isinf(result)):
+        print("ERROR: sample_surface_points_via_depth returned inf values!")
+        # Fallback to simple sampling
+        print("DEBUG: Using fallback simple sampling due to inf values")
+        return sample_points(mesh, n_pts, seed)
+    
+    return result
 
 
 def render_depth_packets(mesh: trimesh.Trimesh,
@@ -229,32 +345,44 @@ def render_depth_packets(mesh: trimesh.Trimesh,
     for prim in mesh_node.primitives:
         prim.material.doubleSided = True
 
-    renderer = pyrender.OffscreenRenderer(resolution, resolution)
+    renderer = None
+    try:
+        renderer = pyrender.OffscreenRenderer(resolution, resolution)
 
-    for d in directions:
-        d = d / (np.linalg.norm(d) + 1e-12)
-        scene = pyrender.Scene(bg_color=[1, 1, 1, 0])
+        for d in directions:
+            d = d / (np.linalg.norm(d) + 1e-12)
+            scene = pyrender.Scene(bg_color=[1, 1, 1, 0])
 
-        scene.add(mesh_node)
+            scene.add(mesh_node)
 
-        up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-        if abs(np.dot(up, d)) > 0.9:
-            up = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+            up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+            if abs(np.dot(up, d)) > 0.9:
+                up = np.array([1.0, 0.0, 0.0], dtype=np.float64)
 
-        eye = center + cam_distance * d
-        pose = _pose_from_lookat(eye, center, up)
+            eye = center + cam_distance * d
+            pose = _pose_from_lookat(eye, center, up)
 
-        cam = pyrender.PerspectiveCamera(yfov=yfov, aspectRatio=aspect, znear=znear, zfar=zfar)
-        scene.add(cam, pose=pose)
+            cam = pyrender.PerspectiveCamera(yfov=yfov, aspectRatio=aspect, znear=znear, zfar=zfar)
+            scene.add(cam, pose=pose)
 
-        try:
-            _, depth = renderer.render(scene)
-        except Exception:
-            depth = np.zeros((resolution, resolution), dtype=np.float32)
+            try:
+                _, depth = renderer.render(scene)
+            except Exception as e:
+                print(f"PyRender rendering failed: {e}")
+                depth = np.zeros((resolution, resolution), dtype=np.float32)
 
-        yield depth, eye.astype(np.float64), pose.astype(np.float64), yfov, aspect, resolution, resolution
+            yield depth, eye.astype(np.float64), pose.astype(np.float64), yfov, aspect, resolution, resolution
 
-    renderer.delete()
+    finally:
+        if renderer is not None:
+            try:
+                renderer.delete()
+            except Exception as e:
+                print(f"Warning: Failed to delete PyRender renderer: {e}")
+        
+        # Force garbage collection to help with memory cleanup
+        import gc
+        gc.collect()
 
 
 def enhanced_viewing_dirs(n: int = 100) -> np.ndarray:
@@ -380,3 +508,55 @@ def backproject_depth_to_points(depth: np.ndarray,
     pts = eye_grid + dir_world * t
     pts = pts[valid]
     return np.ascontiguousarray(pts.astype(np.float32))
+
+
+def reset_pyrender_context():
+    """
+    Reset PyRender context to help with memory management.
+    Call this periodically during training to prevent memory leaks.
+    """
+    try:
+        # Force garbage collection
+        import gc
+        gc.collect()
+        
+        # Clear any existing PyRender contexts
+        import pyrender
+        if hasattr(pyrender, 'OffscreenRenderer'):
+            # Try to create and immediately delete a renderer to reset context
+            try:
+                temp_renderer = pyrender.OffscreenRenderer(64, 64)
+                temp_renderer.delete()
+            except Exception as e:
+                print(f"Warning: Could not reset PyRender context: {e}")
+        
+        print("PyRender context reset completed")
+        
+    except Exception as e:
+        print(f"Error resetting PyRender context: {e}")
+
+
+def sample_surface_points_from_parts_with_context_reset(parts, n_pts: int, seed: int = 42, 
+                                                       num_angles: int = 25, reset_context: bool = True) -> np.ndarray:
+    """
+    Sample surface points with optional PyRender context reset.
+    Use this for training to prevent memory leaks.
+    """
+    print(f"DEBUG: sample_surface_points_from_parts_with_context_reset - {len(parts)} parts, {n_pts} points")
+    
+    if reset_context:
+        print("DEBUG: Resetting PyRender context")
+        reset_pyrender_context()
+    
+    try:
+        result = sample_surface_points_from_parts_fast(parts, n_pts, seed, num_angles)
+        print(f"DEBUG: Point sampling completed - {len(result)} points")
+        return result
+    except Exception as e:
+        print(f"ERROR: Point sampling failed: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fallback to simple sampling
+        print("DEBUG: Using fallback simple sampling")
+        combined_mesh = build_combined(parts)
+        return sample_points(combined_mesh, n_pts, seed)

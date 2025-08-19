@@ -28,6 +28,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Global tracking for best performance across all environment instances
 _global_best_H = float('inf')
 _global_best_params = None
+_global_best_H = float('inf')
+max_H = 10.0  # Maximum Hausdorff distance instead of infinity
 
 
 def _coacd_worker(queue: Queue, mesh, threshold: float, merge: bool, max_hull: int):
@@ -67,12 +69,12 @@ class CoACDEnv(gym.Env):
         self.baseline_metrics = self._load_baseline_metrics(baseline_file)
         
         # Updated reward coefficients based on the new baseline
-        # Baseline: hausdorff=0.065965, runtime=7.320s, vertices=1653, parts=14
+        # Baseline: hausdorff=0.003680, runtime=7.753s, vertices=1406, parts=10
         self.reward_coefficients = {
-            'hausdorff': 15.0,  # Increased weight for hausdorff improvement
-            'runtime': 0.5,     # Reduced weight for runtime (already quite fast)
-            'vertices': 0.002,  # Increased weight for vertex reduction
-            'num_parts': 0.2    # Increased weight for part reduction
+            'hausdorff': 100.0,  # High weight for hausdorff (small values, big impact)
+            'runtime': 0.1,      # Low weight for runtime (seconds scale)
+            'vertices': 0.0005,  # Very low weight for vertices (large numbers)
+            'num_parts': 0.05    # Low weight for parts (small numbers)
         }
 
         self.observation_space = spaces.Box(-1.0, 1.0, (npts, 3), np.float32)
@@ -97,16 +99,16 @@ class CoACDEnv(gym.Env):
             else:
                 print(f"Warning: Baseline file {baseline_file} not found. Using fallback values.")
                 return {
-                    'hausdorff_distance': 0.0040727704763412476,
-                    'runtime': 6.211418867111206,
+                    'hausdorff_distance': 0.0036803423427045345,
+                    'runtime': 5.734677076339722,
                     'total_vertices': 1592,
                     'num_parts': 14
                 }
         except Exception as e:
             print(f"Error loading baseline metrics: {e}")
             return {
-                'hausdorff_distance': 0.0040727704763412476,
-                'runtime': 6.211418867111206,
+                'hausdorff_distance': 0.0036803423427045345,
+                'runtime': 5.734677076339722,
                 'total_vertices': 1592,
                 'num_parts': 14
             }
@@ -151,39 +153,25 @@ class CoACDEnv(gym.Env):
             # Use regular sampling for single meshes
             dec_pts = sample_points(dec_mesh, self.npts, seed=42).astype(np.float32)
         dec_pts = torch.from_numpy(dec_pts)[None].to(device)
+        
+        # Reset PyRender context to prevent memory leaks
+        from src.utils.geometry import reset_pyrender_context
+        reset_pyrender_context()
+        
         return hausdorff(self.eval_src_pts, dec_pts)
 
     def _calculate_comparative_reward(self, hausdorff_dist, runtime, vertices, num_parts):
-        """Calculate reward based on comparison with baseline metrics with 1.5x relaxation."""
-        baseline = self.baseline_metrics
-        relaxation_factor = 1.5
+        """Calculate reward based on actual metric values (no baseline comparison)."""
+        # Reward = negative weighted sum of the actual values
+        # Lower values (better performance) give higher rewards
+        reward = (
+            -self.reward_coefficients['hausdorff'] * hausdorff_dist +
+            -self.reward_coefficients['runtime'] * runtime +
+            -self.reward_coefficients['vertices'] * vertices +
+            -self.reward_coefficients['num_parts'] * num_parts
+        )
         
-        # Check if all metrics are better than baseline * 1.5 (less strict)
-        hausdorff_better = hausdorff_dist < baseline['hausdorff_distance'] * relaxation_factor
-        runtime_better = runtime < baseline['runtime'] * relaxation_factor
-        vertices_better = vertices < baseline['total_vertices'] * relaxation_factor
-        parts_better = num_parts <= baseline['num_parts'] * relaxation_factor
-        
-        # Calculate improvement percentages against relaxed baseline
-        hausdorff_improvement = (baseline['hausdorff_distance'] * relaxation_factor - hausdorff_dist) / (baseline['hausdorff_distance'] * relaxation_factor)
-        runtime_improvement = (baseline['runtime'] * relaxation_factor - runtime) / (baseline['runtime'] * relaxation_factor)
-        vertices_improvement = (baseline['total_vertices'] * relaxation_factor - vertices) / (baseline['total_vertices'] * relaxation_factor)
-        parts_improvement = max(0, (baseline['num_parts'] * relaxation_factor - num_parts) / (baseline['num_parts'] * relaxation_factor))
-        
-        # Base reward: positive if all metrics are better than relaxed baseline, negative otherwise
-        if hausdorff_better and runtime_better and vertices_better and parts_better:
-            # Reward based on percentage improvements against relaxed baseline
-            reward = (
-                self.reward_coefficients['hausdorff'] * hausdorff_improvement +
-                self.reward_coefficients['runtime'] * runtime_improvement +
-                self.reward_coefficients['vertices'] * vertices_improvement +
-                self.reward_coefficients['num_parts'] * parts_improvement
-            )
-            return max(0.1, reward)  # Minimum positive reward for improvements
-        else:
-            # Penalty based on how many metrics are worse than relaxed baseline
-            worse_count = sum([not hausdorff_better, not runtime_better, not vertices_better, not parts_better])
-            return -worse_count * 0.5  # Graduated penalty
+        return reward
     def reset(self, *, seed=None, **kwargs):
         super().reset(seed=seed)
         
@@ -199,6 +187,20 @@ class CoACDEnv(gym.Env):
             no_merge = bool(action[1] > 0)
             max_hull = int(10 + (action[2] * 0.5 + 0.5) * 90)
 
+        # Initialize default values
+        terminated = True
+        truncated = False
+        success = False
+        improvement = False
+        error_type = None
+        timeout = False
+        H = max_H  # Use max_H instead of infinity
+        V_raw = 0
+        num_parts = 0
+        obs = self._create_observation(self.mesh)
+        reward = -5.0  # Default penalty
+
+        # Run CoACD with timeout
         limit_sec = self.baseline_metrics['runtime']
         queue = Queue()
         proc = Process(
@@ -208,134 +210,115 @@ class CoACDEnv(gym.Env):
         t0 = time.time()
         proc.start()
         proc.join(timeout=limit_sec)
+        runtime = time.time() - t0
 
-        terminated = True
-        truncated = False
-
+        # Handle timeout
         if proc.is_alive():
             proc.terminate()
             proc.join()
             reward = -10.0
             truncated = True
-            info = {
-                "timeout": True,
-                "T": limit_sec,
-                "H": float('inf'),
-                "V": 0,
-                "num_parts": 0,
-                "params": {"threshold": threshold, "no_merge": no_merge, "max_hull": max_hull},
-                "success": False,
-                "improvement": False,
-                "error_type": "timeout"
-            }
-            obs = self._create_observation(self.mesh)
-            queue.close()
-            queue.join_thread()
-            return obs, reward, terminated, truncated, info
+            timeout = True
+            error_type = "timeout"
+        else:
+            # Get results and validate
+            parts = queue.get_nowait()
+            
+            # Validate parts
+            if not parts or len(parts) == 0:
+                print(f"Warning: CoACD returned 0 parts for threshold={threshold}, no_merge={no_merge}, max_hull={max_hull}")
+                error_type = "failed_decomposition"
+            else:
+                # Validate each part individually
+                valid_parts = []
+                for i, (verts, faces) in enumerate(parts):
+                    if len(verts) == 0 or len(faces) == 0:
+                        print(f"Warning: Part {i} is empty (verts={len(verts)}, faces={len(faces)})")
+                        continue
+                    if np.any(np.isnan(verts)) or np.any(np.isinf(verts)):
+                        print(f"Warning: Part {i} contains NaN/Inf vertices")
+                        continue
+                    valid_parts.append((verts, faces))
+                
+                if len(valid_parts) == 0:
+                    print(f"Warning: No valid parts after validation for threshold={threshold}, no_merge={no_merge}, max_hull={max_hull}")
+                    error_type = "no_valid_parts"
+                else:
+                    # Create decomposed mesh
+                    try:
+                        verts_list, faces_list = zip(*valid_parts)
+                        all_verts = np.vstack(verts_list)
+                        all_faces = []
+                        v_off = 0
+                        for verts, faces in zip(verts_list, faces_list):
+                            all_faces.append(faces + v_off)
+                            v_off += verts.shape[0]
+                        all_faces = np.vstack(all_faces)
+                        dec_mesh = trimesh.Trimesh(vertices=all_verts, faces=all_faces, process=False)
+                    except Exception as e:
+                        print(f"Error creating decomposed mesh: {e}")
+                        error_type = "mesh_creation_failed"
+                    else:
+                        # Calculate Hausdorff and metrics
+                        with tic("Hausdorff"):
+                            H = self._hausdorff_vs_fixed(dec_mesh, valid_parts)
+                        
+                        V_raw = dec_mesh.vertices.shape[0]
+                        num_parts = len(parts)
+                        
+                        # Calculate reward and check for improvement
+                        reward = self._calculate_comparative_reward(H, runtime, V_raw, num_parts)
+                        
+                        # Store parameters for this step
+                        self.best_params = {
+                            "threshold": threshold,
+                            "no_merge": no_merge,
+                            "max_hull": max_hull,
+                            "hausdorff": float(H),
+                            "vertices": int(V_raw),
+                            "runtime": float(runtime),
+                            "num_parts": num_parts
+                        }
+                        
+                        # Check for global improvement
+                        global _global_best_H, _global_best_params
+                        if H < _global_best_H:
+                            improvement = True
+                            old_best_H = _global_best_H
+                            _global_best_H = H
+                            _global_best_params = self.best_params.copy()
+                            print(f"\n🏆 GLOBAL BEST IMPROVEMENT!")
+                            print(f"   Hausdorff: {H:.6f} (previous best: {old_best_H:.6f})")
+                            print(f"   Runtime: {runtime:.3f}s (baseline: {self.baseline_metrics['runtime']:.3f}s)")
+                            print(f"   Vertices: {V_raw} (baseline: {self.baseline_metrics['total_vertices']})")
+                            print(f"   Parts: {num_parts} (baseline: {self.baseline_metrics['num_parts']})")
+                            print(f"   Parameters: threshold={threshold:.3f}, no_merge={no_merge}, max_hull={max_hull}")
+                        
+                        # Check for success
+                        success = (H < self.baseline_metrics['hausdorff_distance'] * 0.75 and 
+                                  runtime < self.baseline_metrics['runtime'] * 1.2)
+                        if success:
+                            reward += 10.0
+                            terminated = True
+                        
+                        # Create observation from decomposed mesh
+                        obs = self._create_observation(dec_mesh)
 
-        runtime = time.time() - t0
-        parts = queue.get_nowait()
+        # Clean up queue
         queue.close()
         queue.join_thread()
 
-        if not parts or len(parts) == 0:
-            reward = -5.0
-            info = {
-                "timeout": False,
-                "T": runtime,
-                "H": float('inf'),
-                "V": 0,
-                "num_parts": 0,
-                "params": {"threshold": threshold, "no_merge": no_merge, "max_hull": max_hull},
-                "success": False,
-                "improvement": False,
-                "error_type": "failed_decomposition"
-            }
-            obs = self._create_observation(self.mesh)
-            return obs, reward, terminated, truncated, info
-
-        try:
-            verts_list, faces_list = zip(*parts)
-            all_verts = np.vstack(verts_list)
-            all_faces = []
-            v_off = 0
-            for verts, faces in zip(verts_list, faces_list):
-                all_faces.append(faces + v_off)
-                v_off += verts.shape[0]
-            all_faces = np.vstack(all_faces)
-            dec_mesh = trimesh.Trimesh(vertices=all_verts, faces=all_faces, process=False)
-        except Exception as e:
-            print(f"Error creating decomposed mesh: {e}")
-            reward = -5.0
-            info = {
-                "timeout": False,
-                "T": runtime,
-                "H": float('inf'),
-                "V": 0,
-                "num_parts": 0,
-                "params": {"threshold": threshold, "no_merge": no_merge, "max_hull": max_hull},
-                "success": False,
-                "improvement": False,
-                "error_type": "mesh_creation_failed"
-            }
-            obs = self._create_observation(self.mesh)
-            return obs, reward, terminated, truncated, info
-
-        with tic("Hausdorff"):
-            H = self._hausdorff_vs_fixed(dec_mesh, parts)
-
-        with tic("assemble reward"):
-            V_raw = dec_mesh.vertices.shape[0]
-            num_parts = len(parts)
-            
-            reward = self._calculate_comparative_reward(H, runtime, V_raw, num_parts)
-            
-            # Store parameters for this step (for potential visualization)
-            self.best_params = {
-                "threshold": threshold,
-                "no_merge": no_merge,
-                "max_hull": max_hull,
-                "hausdorff": float(H),
-                "vertices": int(V_raw),
-                "runtime": float(runtime),
-                "num_parts": num_parts
-            }
-            
-            # Check for global improvement
-            global _global_best_H, _global_best_params
-            improvement = False
-            
-            if H < _global_best_H:
-                improvement = True
-                old_best_H = _global_best_H
-                _global_best_H = H
-                _global_best_params = self.best_params.copy()
-                print(f"\n🏆 GLOBAL BEST IMPROVEMENT!")
-                print(f"   Hausdorff: {H:.6f} (previous best: {old_best_H:.6f})")
-                print(f"   Runtime: {runtime:.3f}s (baseline: {self.baseline_metrics['runtime']:.3f}s)")
-                print(f"   Vertices: {V_raw} (baseline: {self.baseline_metrics['total_vertices']})")
-                print(f"   Parts: {num_parts} (baseline: {self.baseline_metrics['num_parts']})")
-                print(f"   Parameters: threshold={threshold:.3f}, no_merge={no_merge}, max_hull={max_hull}")
-            
-            success = (H < self.baseline_metrics['hausdorff_distance'] * 0.75 and 
-                      runtime < self.baseline_metrics['runtime'] * 1.2)
-            if success:
-                reward += 10.0
-                terminated = True
-
-        # Create normalized observation from decomposed mesh
-        obs = self._create_observation(dec_mesh)
-
+        # Build final info dictionary
         info = {
             "H": float(H),
             "V": int(V_raw),
             "T": runtime,
             "num_parts": num_parts,
-            "timeout": False,
+            "timeout": timeout,
             "success": success,
             "improvement": improvement,
             "params": {"threshold": threshold, "no_merge": no_merge, "max_hull": max_hull},
-            "error_type": None
+            "error_type": error_type
         }
 
         return obs, reward, terminated, truncated, info

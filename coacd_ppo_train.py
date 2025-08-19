@@ -1,5 +1,7 @@
 # coacd_ppo_train.py  – train PPO on CoACD + save best model via EvalCallback
 import os, time, gymnasium as gym
+import numpy as np
+import torch
 from gymnasium.wrappers import TimeLimit
 from gymnasium.envs.registration import register
 
@@ -40,11 +42,20 @@ class DetailedLoggingCallback(BaseCallback):
         self.episode_rewards = []
         self.episode_lengths = []
         self.episode_count = 0
-
         self.total_steps = 0
+        self.nan_detected = False
         
     def _on_step(self) -> bool:
         self.total_steps += 1
+
+        # Check for NaN values in the model
+        if hasattr(self.model, 'policy') and hasattr(self.model.policy, 'optimizer'):
+            for param_group in self.model.policy.optimizer.param_groups:
+                for param in param_group['params']:
+                    if param.grad is not None and torch.isnan(param.grad).any():
+                        print(f"WARNING: NaN gradient detected at step {self.total_steps}")
+                        self.nan_detected = True
+                        return False  # Stop training
 
         if self.total_steps % 10 == 0:
             # Log episode-level metrics when episode ends
@@ -55,7 +66,12 @@ class DetailedLoggingCallback(BaseCallback):
                     if info:  # info might be empty dict
                         # Log custom metrics if available
                         if 'H' in info:
-                            self.logger.record_mean('custom/hausdorff_distance', info['H'])
+                            hausdorff_val = info['H']
+                            # Check for NaN/Inf in Hausdorff
+                            if np.isnan(hausdorff_val) or np.isinf(hausdorff_val):
+                                print(f"WARNING: Invalid Hausdorff value at step {self.total_steps}: {hausdorff_val}")
+                                hausdorff_val = 10.0  # Use max_H
+                            self.logger.record_mean('custom/hausdorff_distance', hausdorff_val)
                         if 'T' in info:
                             self.logger.record_mean('custom/runtime', info['T'])
                         if 'V' in info:
@@ -68,8 +84,15 @@ class DetailedLoggingCallback(BaseCallback):
                 # Log general training metrics
                 rewards = self.locals.get('rewards', [])
                 if len(rewards) > 0:
-                    self.logger.record_mean('custom/step_reward_mean', float(rewards.mean()))
-                    self.logger.record_mean('custom/step_reward_std', float(rewards.std()))
+                    reward_mean = float(rewards.mean())
+                    reward_std = float(rewards.std())
+                    # Check for NaN in rewards
+                    if np.isnan(reward_mean) or np.isnan(reward_std):
+                        print(f"WARNING: NaN reward detected at step {self.total_steps}")
+                        reward_mean = 0.0
+                        reward_std = 0.0
+                    self.logger.record_mean('custom/step_reward_mean', reward_mean)
+                    self.logger.record_mean('custom/step_reward_std', reward_std)
 
                 self.logger.dump(self.total_steps)
                 
@@ -130,10 +153,14 @@ def main() -> None:
         env             =train_env,
         n_steps         =N_STEPS,
         batch_size      =32,
-        learning_rate   =3e-4,
+        learning_rate   =1e-4,  # Back to original learning rate
         tensorboard_log =LOG_DIR,
         verbose         =1,
         policy_kwargs   =policy_kwargs,
+        # Add gradient clipping to prevent explosion
+        max_grad_norm   =0.1,  # More aggressive clipping
+        # Add entropy for exploration
+        ent_coef        =0.01,  # Increase entropy for exploration
     )
 
     # ── train with combined callbacks ────────────────────────────────
