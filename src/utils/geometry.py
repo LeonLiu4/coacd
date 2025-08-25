@@ -10,7 +10,7 @@ import pymeshlab
 @torch.no_grad()
 def hausdorff(a_pts: torch.Tensor, b_pts: torch.Tensor) -> float:
     """Symmetric Hausdorff distance between (1,N,3) and (1,M,3) tensors."""
-    print(f"DEBUG: hausdorff called with shapes {a_pts.shape}, {b_pts.shape}")
+    #print(f"DEBUG: hausdorff called with shapes {a_pts.shape}, {b_pts.shape}")
     try:
         # Check for empty or invalid point clouds
         if a_pts.shape[1] == 0 or b_pts.shape[1] == 0:
@@ -66,7 +66,7 @@ def simplify_point_cloud_meshlab(points: np.ndarray, target_points: int = 100000
         Simplified point cloud as numpy array (target_points, 3)
     """
     try:
-        print(f"Processing {len(points)} points to get {target_points} uniform points...")
+        #print(f"Processing {len(points)} points to get {target_points} uniform points...")
         
         # If we have too few points, just return what we have
         if len(points) < target_points:
@@ -91,20 +91,20 @@ def simplify_point_cloud_meshlab(points: np.ndarray, target_points: int = 100000
         unique_hashes, unique_indices = np.unique(grid_hash, return_index=True)
         simplified_points = points[unique_indices]
         
-        print(f"Grid sampling reduced to {len(simplified_points)} points")
+        #print(f"Grid sampling reduced to {len(simplified_points)} points")
         
         # If we still have too many points, use random sampling
         if len(simplified_points) > target_points:
             indices = np.random.choice(len(simplified_points), target_points, replace=False)
             simplified_points = simplified_points[indices]
-            print(f"Further reduced to {len(simplified_points)} points via random sampling")
+            #print(f"Further reduced to {len(simplified_points)} points via random sampling")
         elif len(simplified_points) < target_points:
             # If we have too few points, add some random points
             needed = target_points - len(simplified_points)
             extra_indices = np.random.choice(len(points), needed, replace=False)
             extra_points = points[extra_indices]
             simplified_points = np.vstack([simplified_points, extra_points])
-            print(f"Added {needed} random points to reach {len(simplified_points)} points")
+            #print(f"Added {needed} random points to reach {len(simplified_points)} points")
         
         return simplified_points.astype(np.float32)
         
@@ -129,7 +129,7 @@ def sample_surface_points_from_parts(parts, n_pts: int, seed: int = 42, num_angl
 
 def sample_surface_points_from_parts_fast(parts, n_pts: int, seed: int = 42, num_angles: int = 25) -> np.ndarray:
     """Fast sampling for training - optimized for speed with lower resolution and efficient parameters."""
-    print(f"DEBUG: BREAKPOINT 1 - sample_surface_points_from_parts_fast - {len(parts)} parts, {n_pts} points, {num_angles} angles")
+    #print(f"DEBUG: BREAKPOINT 1 - sample_surface_points_from_parts_fast - {len(parts)} parts, {n_pts} points, {num_angles} angles")
     
     # Validate input parts
     if not parts or len(parts) == 0:
@@ -149,20 +149,20 @@ def sample_surface_points_from_parts_fast(parts, n_pts: int, seed: int = 42, num
         # For 100k points, use a more efficient strategy
         if n_pts >= 50000:
             # Use lower resolution and sample fewer points per view, then upsample
-            print("DEBUG: Using 100k+ point strategy with 256x256 resolution")
+            #print("DEBUG: Using 100k+ point strategy with 256x256 resolution")
             result = sample_surface_points_via_depth(parts, n_pts=n_pts, num_dirs=num_angles,
                                                   resolution=256, yfov_deg=60.0,  # Even lower resolution for speed
                                                   tol=1e-2, seed=seed, save_debug=False,  # Higher tolerance for speed
                                                   use_meshlab_simplification=True)  # Enable MeshLab for 100k points
         else:
             # For smaller point counts, use the standard approach
-            print("DEBUG: Using standard strategy with 512x512 resolution")
+            #print("DEBUG: Using standard strategy with 512x512 resolution")
             result = sample_surface_points_via_depth(parts, n_pts=n_pts, num_dirs=num_angles,
                                                   resolution=512, yfov_deg=60.0,  # Lower resolution for speed
                                                   tol=1e-2, seed=seed, save_debug=False,  # Higher tolerance for speed
                                                   use_meshlab_simplification=True)  # Enable MeshLab for 100k points
         
-        print(f"DEBUG: sample_surface_points_from_parts_fast completed - {len(result)} points")
+        #print(f"DEBUG: sample_surface_points_from_parts_fast completed - {len(result)} points")
         return result
         
     except Exception as e:
@@ -185,18 +185,18 @@ def sample_surface_points_via_depth(parts,
                                     save_debug: bool = False,
                                     use_meshlab_simplification: bool = True) -> np.ndarray:
     """Depth-based sampling on the combined convex hulls using depth map backprojection."""
-    print(f"DEBUG: BREAKPOINT 2 - sample_surface_points_via_depth - {len(parts)} parts, {n_pts} points, {num_dirs} dirs, {resolution}x{resolution}")
+    #print(f"DEBUG: BREAKPOINT 2 - sample_surface_points_via_depth - {len(parts)} parts, {n_pts} points, {num_dirs} dirs, {resolution}x{resolution}")
     
     np.random.seed(seed)  # Ensure deterministic behavior
     
     try:
         mesh = build_combined(parts)
-        print(f"DEBUG: Combined mesh - {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
+        #print(f"DEBUG: Combined mesh - {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
         
         directions = enhanced_viewing_dirs(num_dirs)
-        print(f"DEBUG: Generated {len(directions)} viewing directions")
+        #print(f"DEBUG: Generated {len(directions)} viewing directions")
         
-        print(f"Rendering depth maps from {num_dirs} directions at {resolution}x{resolution} resolution...")
+        #print(f"Rendering depth maps from {num_dirs} directions at {resolution}x{resolution} resolution...")
     except Exception as e:
         print(f"ERROR: Failed to build combined mesh or generate directions: {e}")
         import traceback
@@ -262,27 +262,27 @@ def sample_surface_points_via_depth(parts,
         if pts.size:
             all_pts.append(pts)
             
-        if (i + 1) % 10 == 0:
-            print(f"  Processed {i + 1}/{num_dirs} views, collected {sum(len(pts) for pts in all_pts)} points so far")
+        #if (i + 1) % 10 == 0:
+        #    print(f"  Processed {i + 1}/{num_dirs} views, collected {sum(len(pts) for pts in all_pts)} points so far")
     
-    print(f"Completed depth rendering: {valid_views}/{num_dirs} valid views")
+    #print(f"Completed depth rendering: {valid_views}/{num_dirs} valid views")
     
     if not all_pts:
         print("Warning: No valid depth maps generated, falling back to mesh sampling")
         return mesh.sample(n_pts).astype(np.float32)
     
     pts = np.vstack(all_pts)
-    print(f"Total points from depth backprojection: {len(pts)}")
+    #print(f"Total points from depth backprojection: {len(pts)}")
     
     # Deduplicate points
     q = np.round(pts / tol).astype(np.int64)
     _, keep = np.unique(q, axis=0, return_index=True)
     pts = pts[np.sort(keep)]
-    print(f"After deduplication: {len(pts)} unique points")
+    #print(f"After deduplication: {len(pts)} unique points")
     
     # Use MeshLab for uniform point cloud simplification if requested
     if use_meshlab_simplification and len(pts) > n_pts:
-        print(f"Using MeshLab to simplify {len(pts)} points to {n_pts} uniform points...")
+        #print(f"Using MeshLab to simplify {len(pts)} points to {n_pts} uniform points...")
         pts = simplify_point_cloud_meshlab(pts, n_pts)
     else:
         # Fallback to original downsampling strategy
@@ -304,8 +304,8 @@ def sample_surface_points_via_depth(parts,
         print(f"  - points_view_XXX.ply: Point clouds from each view")
         print(f"  - camera_info_XXX.npz: Camera parameters for each view")
     
-    print(f"DEBUG: sample_surface_points_via_depth returning {len(pts)} points")
-    print(f"DEBUG: Final point cloud bounds - min={np.min(pts, axis=0)}, max={np.max(pts, axis=0)}")
+    #print(f"DEBUG: sample_surface_points_via_depth returning {len(pts)} points")
+    #print(f"DEBUG: Final point cloud bounds - min={np.min(pts, axis=0)}, max={np.max(pts, axis=0)}")
     
     result = np.ascontiguousarray(pts.astype(np.float32))
     
@@ -530,7 +530,7 @@ def reset_pyrender_context():
             except Exception as e:
                 print(f"Warning: Could not reset PyRender context: {e}")
         
-        print("PyRender context reset completed")
+        #print("PyRender context reset completed")
         
     except Exception as e:
         print(f"Error resetting PyRender context: {e}")

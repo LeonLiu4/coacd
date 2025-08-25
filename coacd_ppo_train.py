@@ -55,8 +55,8 @@ class DetailedLoggingCallback(BaseCallback):
                         self.nan_detected = True
                         return False  # Stop training
 
-        # Periodic logging
-        if self.total_steps % 10 == 0:
+        # More frequent logging for smoother curves
+        if self.total_steps % 5 == 0:
             infos = self.locals.get('infos', [])
             for info in infos:
                 if not info:
@@ -119,10 +119,10 @@ def main() -> None:
         eval_env,
         best_model_save_path=BEST_DIR,
         log_path            =LOG_DIR,
-        eval_freq           =N_STEPS,
+        eval_freq           =N_STEPS // 2,  # Evaluate more frequently
         deterministic       =True,
         render              =False,
-        n_eval_episodes     =3,
+        n_eval_episodes     =5,  # More episodes for smoother averaging
     )
     callback = CallbackList([logging_cb, eval_cb])
 

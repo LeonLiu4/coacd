@@ -1,6 +1,23 @@
 {
-  "runtime": 7.752835035324097,
-  "total_vertices": 1406,
-  "num_parts": 10,
-  "hausdorff_distance": 0.0036803423427045345
+  "parameters": {
+    "threshold": 0.1,
+    "max_convex_hull": -1,
+    "preprocess_mode": "auto",
+    "preprocess_resolution": 30,
+    "resolution": 1000,
+    "mcts_nodes": 20,
+    "mcts_iterations": 100,
+    "mcts_max_depth": 3,
+    "pca": false,
+    "merge": true,
+    "decimate": false
+  },
+  "success": true,
+  "runtime": 2.775862455368042,
+  "num_parts": 11,
+  "total_vertices": 1475,
+  "total_faces": 2906,
+  "hausdorff_distance": 0.002679404802620411,
+  "input_vertices": 2560,
+  "input_faces": 5116
 }

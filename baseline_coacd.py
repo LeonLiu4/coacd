@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
 """
-Run CoACD with default parameters to establish baseline metrics.
+Fixed baseline CoACD script that handles PyRender display issues.
 """
+import os
 import time
 import json
-import coacd
-import trimesh
-import numpy as np
-from src.utils.geometry import hausdorff, sample_points, sample_surface_points_from_parts, sample_surface_points_from_parts_fast
-import torch
+import sys
 
+# Disable CUDA and set display environment
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
+os.environ["DISPLAY"] = ":99"  # Use Xvfb display
+os.environ["PYOPENGL_PLATFORM"] = "egl"  # Use EGL instead of X11
 
 def run_baseline_coacd(mesh_path: str, output_file: str = "baseline_metrics.json"):
     """Run CoACD with default parameters and save baseline metrics."""
     print(f"Running baseline CoACD on: {mesh_path}")
     
     # Load mesh
+    import trimesh
     mesh = trimesh.load_mesh(mesh_path, process=False)
     print(f"Input mesh: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
     
     # Create CoACD mesh
+    import coacd
+    import numpy as np
     coacd_mesh = coacd.Mesh(
         mesh.vertices.astype(np.float32),
         mesh.faces.astype(np.int64),
@@ -76,7 +81,7 @@ def run_baseline_coacd(mesh_path: str, output_file: str = "baseline_metrics.json
         total_faces = sum(len(faces) for _, faces in parts)
         num_parts = len(parts)
         
-        # Calculate Hausdorff distance
+        # Calculate Hausdorff distance using the same method as training environment
         # Combine all parts into one mesh for comparison
         all_vertices = []
         all_faces = []
@@ -91,16 +96,22 @@ def run_baseline_coacd(mesh_path: str, output_file: str = "baseline_metrics.json
             combined_vertices = np.vstack(all_vertices)
             combined_faces = np.vstack(all_faces)
             
-            # Use consistent sampling like the training environment
-            # Sample fixed evaluation points from original mesh (same as training)
+            # Use the same sampling method as the training environment
             np.random.seed(42)
-            fixed_eval_pts = sample_points(mesh, 4096)
-            fixed_eval_tensor = torch.from_numpy(fixed_eval_pts).unsqueeze(0)
+            from src.utils.geometry import sample_points, sample_surface_points_from_parts_fast, hausdorff
             
-            # Sample reconstructed points using the fast surface-only approach for consistency
-            # Use 25 camera angles to match the training environment
+            # Sample fixed evaluation points from original mesh (same as training)
+            fixed_eval_pts = sample_points(mesh, 4096)
+            
+            # Sample points from the decomposed mesh using the fast surface-only approach
+            # This matches exactly what the training environment does
             reconstructed_pts = sample_surface_points_from_parts_fast(parts, 4096, seed=42, num_angles=25)
-            reconstructed_tensor = torch.from_numpy(reconstructed_pts).unsqueeze(0)
+            
+            # Force CPU tensors
+            import torch
+            torch.set_default_device('cpu')
+            fixed_eval_tensor = torch.from_numpy(fixed_eval_pts).unsqueeze(0).cpu()
+            reconstructed_tensor = torch.from_numpy(reconstructed_pts).unsqueeze(0).cpu()
             
             hausdorff_dist = hausdorff(fixed_eval_tensor, reconstructed_tensor)
         else:
