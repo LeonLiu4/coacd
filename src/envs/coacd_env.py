@@ -162,10 +162,10 @@ class CoACDEnv(gym.Env):
 
         # Reward coefficients based on baseline values - hausdorff and runtime most important
         self.reward_coefficients = {
-            'hausdorff': 1000.0,  # ~1/0.001 to make hausdorff differences significant
-            'runtime':   1.0,     # ~1/1 to make runtime differences significant  
-            'vertices':  0.001,   # ~1/1000 to make vertex differences minor
-            'num_parts': 0.1,     # ~1/10 to make part differences moderate
+            'hausdorff': 60.0,
+            'runtime':   0.03,
+            'vertices':  0.00015,
+            'num_parts': 0.015,
         }
 
         self.observation_space = spaces.Box(-1.0, 1.0, (npts, 3), np.float32)
