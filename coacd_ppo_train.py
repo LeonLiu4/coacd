@@ -119,10 +119,10 @@ def main() -> None:
         eval_env,
         best_model_save_path=BEST_DIR,
         log_path            =LOG_DIR,
-        eval_freq           =N_STEPS // 2,  # Evaluate more frequently
+        eval_freq           =N_STEPS * 10,  # Evaluate more frequently
         deterministic       =True,
         render              =False,
-        n_eval_episodes     =5,  # More episodes for smoother averaging
+        n_eval_episodes     =1,  # More episodes for smoother averaging
     )
     callback = CallbackList([logging_cb, eval_cb])
 

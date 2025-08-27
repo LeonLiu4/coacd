@@ -104,8 +104,16 @@ def _coacd_worker_loop(cmd_q, res_q, verts, faces, use_gpu, silence):
                     parts = coacd.run_coacd(
                         co_mesh,
                         threshold=msg["threshold"],
-                        merge=msg["merge"],
-                        max_convex_hull=msg["max_hull"],
+                        max_convex_hull=-1,
+                        preprocess_mode="auto",
+                        preprocess_resolution=msg["prep_resolution"],
+                        mcts_iterations=msg["mcts_iteration"],
+                        mcts_max_depth=msg["mcts_depth"],
+                        mcts_nodes=msg["mcts_node"],
+                        resolution=msg["resolution"],
+                        pca=msg["pca"],
+                        merge=True,
+                        decimate=False,
                         seed=msg.get("seed", 42),
                     )
                     # Send back parts. NOTE: This copies arrays to parent.
@@ -136,7 +144,7 @@ class CoACDEnv(gym.Env):
     """Gym environment wrapping a single CoACD call as an RL step (persistent worker)."""
     metadata = {"render_modes": []}
 
-    def __init__(self, mesh_path: str, npts: int = 4096, baseline_file: str = "baseline_metrics.json"):
+    def __init__(self, mesh_path: str, npts: int = 40960, baseline_file: str = "baseline_metrics.json"):
         super().__init__()
         self.mesh_path = mesh_path
         self.npts = npts
@@ -155,21 +163,36 @@ class CoACDEnv(gym.Env):
         self.mesh = mesh
         self._verts = verts
         self._faces = faces
+        
+        # Input point cloud
+        self.obs = self._create_observation(mesh)
 
         # Baseline
         self.baseline_metrics = self._load_baseline_metrics(baseline_file)
         baseline = self.baseline_metrics
+        self.baseline_runtime = baseline['runtime']
+        self.runtime_limit = self.baseline_runtime * 2.0
 
         # Reward coefficients based on baseline values - hausdorff and runtime most important
         self.reward_coefficients = {
-            'hausdorff': 60.0,
-            'runtime':   0.03,
-            'vertices':  0.00015,
-            'num_parts': 0.015,
+            'hausdorff': 1, #60.0,
+            'runtime':   0, #0.03,
+            'vertices':  0, #0.00015,
+            'num_parts': 0, #0.015,
         }
 
         self.observation_space = spaces.Box(-1.0, 1.0, (npts, 3), np.float32)
-        self.action_space = spaces.Box(-1.0, 1.0, (3,), np.float32)
+        
+        # Change action space
+        self.action_space = spaces.MultiDiscrete([
+            10, # threshold : [0.01, 1.0], multiple of 0.01
+            9, # prep_resolution : [20, 100] integer, multiple of 10
+            15, # mcts_iteration : [60, 200] integer, multiple of 10
+            6, # mcts_depth : [2, 7] integer
+            4, # mcts_node : [10, 40] integer, multiple of 10
+            10, # resolution : [1000, 10000] integer, multiple of 1000
+            2, # pca : [0, 1] boolean
+        ])
 
         self.best_params = None
 
@@ -293,17 +316,23 @@ class CoACDEnv(gym.Env):
 
     def _calculate_comparative_reward(self, hausdorff_dist, runtime, vertices, num_parts):
         # Set threshold to be smaller one between 3 * baseline and 10sec
-        runtime_thresh = min(3.0 * self.baseline_metrics['runtime'], 10.0)
-        
-        if runtime > runtime_thresh:
+        if runtime > self.runtime_limit:
             reward = -1.0
         else:
-            reward = (
-                np.exp(-hausdorff_dist * self.reward_coefficients['hausdorff']) + 
-                np.exp(-runtime * self.reward_coefficients['runtime']) +
-                np.exp(-vertices * self.reward_coefficients['vertices']) +
-                np.exp(-num_parts * self.reward_coefficients['num_parts'])
-            )
+            r = runtime / (self.baseline_runtime + 1e-8)
+            h = hausdorff_dist / (self.baseline_metrics['hausdorff_distance'] + 1e-8)
+            alpha = (r - 1) * 8
+            alpha = 1.0 / (1.0 + np.exp(-alpha)) # sigmoid
+            runtime_reward = alpha * np.clip(2 - r, 0, 1)
+            H_reward = (1 - alpha) * np.clip(1 - h, 0, 1)
+            
+            reward = runtime_reward + H_reward
+            # reward = (
+            #     np.exp(-hausdorff_dist * self.reward_coefficients['hausdorff']) + 
+            #     np.exp(-runtime * self.reward_coefficients['runtime']) +
+            #     np.exp(-vertices * self.reward_coefficients['vertices']) +
+            #     np.exp(-num_parts * self.reward_coefficients['num_parts'])
+            # )
         
         return reward
 
@@ -336,7 +365,17 @@ class CoACDEnv(gym.Env):
                 pass
                          # worker PID is already updated above
 
-    def _run_coacd_via_worker(self, threshold: float, no_merge: bool, max_hull: int, time_budget: float):
+    def _run_coacd_via_worker(
+        self, 
+        threshold: float,
+        prep_resolution: int, 
+        mcts_iteration: int, 
+        mcts_depth: int, 
+        mcts_node: int, 
+        resolution: int, 
+        pca: bool, 
+        time_budget: float
+    ):
         """
         Send a 'run' command to the persistent worker and wait up to time_budget.
         Returns: (status, parts, runtime, error_type, timeout_flag, exitcode, trace)
@@ -346,8 +385,12 @@ class CoACDEnv(gym.Env):
         msg = {
             "cmd": "run",
             "threshold": float(threshold),
-            "merge": (not no_merge),
-            "max_hull": int(max_hull),
+            "prep_resolution": int(prep_resolution),
+            "mcts_iteration": int(mcts_iteration),
+            "mcts_depth": int(mcts_depth),
+            "mcts_node": int(mcts_node),
+            "resolution": int(resolution),
+            "pca": bool(pca),
             "seed": 42,
         }
 
@@ -387,7 +430,7 @@ class CoACDEnv(gym.Env):
     # --------------- Gym API ---------------
     def reset(self, *, seed=None, **kwargs):
         super().reset(seed=seed)
-        obs = self._create_observation(self.mesh)
+        obs = self.obs          # Do not resample observation here
         return obs, {}
 
     def step(self, action: np.ndarray):
@@ -395,16 +438,13 @@ class CoACDEnv(gym.Env):
         self._print_mem_debug("before step")
 
         with tic("map-action"):
-            # (unchanged) env adds small noise & random flip here
-            noise_scale = 0.05
-            action_noisy = action + np.random.normal(0, noise_scale, action.shape)
-            raw = action_noisy[0] * 0.5 + 0.5
-            threshold = float(max(0.01, min(0.01 + raw * 0.99, 1.0)))
-            merge_prob = 1.0 / (1.0 + np.exp(-action_noisy[1] * 3.0))
-            if np.random.random() < 0.1:
-                merge_prob = 1.0 - merge_prob
-            no_merge = bool(merge_prob < 0.5)
-            max_hull = int(10 + (action_noisy[2] * 0.5 + 0.5) * 90)
+            threshold = action[0] * 0.01 + 0.01          # [0.01, 1.0]
+            prep_resolution = action[1] * 10 + 20        # [20, 100]
+            mcts_iteration = action[2] * 10 + 60        # [60, 200]
+            mcts_depth = action[3] * 1 + 2               # [2, 7]
+            mcts_node = action[4] * 10 + 10              # [10, 40]
+            resolution = action[5] * 1000 + 1000          # [1000, 10000]
+            pca = bool(action[6])
 
         # (unchanged defaults)
         terminated = True
@@ -416,48 +456,38 @@ class CoACDEnv(gym.Env):
         H = max_H
         V_raw = 0
         num_parts = 0
-        obs = self._create_observation(self.mesh)
+        obs = self.obs          # Do not resample observation here
         reward = -5.0
 
-        limit_sec = float(self.baseline_metrics['runtime']) * 2.0
+        limit_sec = self.runtime_limit
 
         # --------- Run on persistent worker ----------
         status, parts, runtime, error_type, timeout, exitcode, worker_trace = self._run_coacd_via_worker(
             threshold=threshold,
-            no_merge=no_merge,
-            max_hull=max_hull,
+            prep_resolution=prep_resolution,
+            mcts_iteration=mcts_iteration,
+            mcts_depth=mcts_depth,
+            mcts_node=mcts_node,
+            resolution=resolution,
+            pca=pca,
             time_budget=limit_sec,
         )
-
-        # Debug: measure payload size returned
-        if parts is not None:
-            bytes_total = 0
-            try:
-                for (v, f) in parts:
-                    bytes_total += getattr(v, "nbytes", 0)
-                    bytes_total += getattr(f, "nbytes", 0)
-            except Exception:
-                pass
-            print(f"[DBG] parts payload ~{bytes_total/1e6:.2f} MB, {len(parts)} parts")
 
         if status == "error":
             # -------- CHANGED: make timeout worst outcome --------
             if error_type == "timeout":
                 reward = TIMEOUT_REWARD
-                truncated = True
             else:
                 reward = ERROR_REWARD
-                terminated = True
             if worker_trace:
                 print("\n[CoACD Worker Error]\n" + worker_trace)
         else:
             # Validate parts
             if not parts or len(parts) == 0:
-                print(f"Warning: CoACD returned 0 parts for threshold={threshold}, no_merge={no_merge}, max_hull={max_hull}")
+                print(f"Warning: CoACD returned 0 parts")
                 error_type = "failed_decomposition"
                 # -------- CHANGED: treat as hard error --------
                 reward = ERROR_REWARD
-                terminated = True
             else:
                 valid_parts = []
                 for i, (verts_i, faces_i) in enumerate(parts):
@@ -470,11 +500,10 @@ class CoACDEnv(gym.Env):
                     valid_parts.append((verts_i, faces_i))
 
                 if len(valid_parts) == 0:
-                    print(f"Warning: No valid parts after validation for threshold={threshold}, no_merge={no_merge}, max_hull={max_hull}")
+                    print(f"Warning: No valid parts after validation")
                     error_type = "no_valid_parts"
                     # -------- CHANGED: treat as hard error --------
                     reward = ERROR_REWARD
-                    terminated = True
                 else:
                     # Create decomposed mesh
                     try:
@@ -492,7 +521,6 @@ class CoACDEnv(gym.Env):
                         error_type = "mesh_creation_failed"
                         # -------- CHANGED: treat as hard error --------
                         reward = ERROR_REWARD
-                        terminated = True
                     else:
                         with tic("Hausdorff"):
                             H = self._hausdorff_vs_fixed(dec_mesh, valid_parts)
@@ -501,36 +529,52 @@ class CoACDEnv(gym.Env):
                         num_parts = len(valid_parts)
 
                         reward = self._calculate_comparative_reward(H, runtime, V_raw, num_parts)
-
-                        self.best_params = {
-                            "threshold": threshold,
-                            "no_merge": no_merge,
-                            "max_hull": max_hull,
-                            "hausdorff": float(H),
-                            "vertices": int(V_raw),
-                            "runtime": float(runtime),
-                            "num_parts": num_parts
-                        }
-
-                        global _global_best_H, _global_best_params
-                        if H < _global_best_H:
-                            improvement = True
-                            old_best_H = _global_best_H
-                            _global_best_H = H
-                            _global_best_params = self.best_params.copy()
+                        
+                        global _global_best_reward, _global_best_params
+                        if reward > _global_best_reward:
+                            _global_best_reward = reward
+                            _global_best_params = {
+                                "threshold": float(threshold),
+                                "prep_resolution": int(prep_resolution),
+                                "mcts_iteration": int(mcts_iteration),
+                                "mcts_depth": int(mcts_depth),
+                                "mcts_node": int(mcts_node),
+                                "resolution": int(resolution),
+                                "pca": bool(pca),
+                            }
                             print(f"\n🏆 GLOBAL BEST IMPROVEMENT!")
-                            print(f"   Hausdorff: {H:.6f} (previous best: {old_best_H:.6f})")
+                            print(f"   Hausdorff: {H:.6f} (baseline: {self.baseline_metrics['hausdorff_distance']:.6f})")
                             print(f"   Runtime:   {runtime:.3f}s (baseline: {self.baseline_metrics['runtime']:.3f}s)")
                             print(f"   Vertices:  {V_raw} (baseline: {self.baseline_metrics['total_vertices']})")
-                            print(f"   Parts:     {num_parts} (baseline: {self.baseline_metrics['num_parts']})")
-                            print(f"   Params:    threshold={threshold:.3f}, no_merge={no_merge}, max_hull={max_hull}")
-
-                        success = (H < self.baseline_metrics['hausdorff_distance'] * 0.9 and
-                                   runtime < self.baseline_metrics['runtime'] * 1.5)
-                        if success:
-                            terminated = True
-
-                        obs = self._create_observation(dec_mesh)
+                            print(f"   Parts:     {num_parts} (baseline: {self.baseline_metrics['num_parts']})") 
+                            print(f"   Params:    threshold={threshold:.3f}, prep_resolution={prep_resolution}, mcts_iteration={mcts_iteration}, mcts_depth={mcts_depth}, mcts_node={mcts_node}, resolution={resolution}, pca={pca}")
+                            
+                            # Save best results
+                            import yaml
+                            with open("best_results.yaml", "w") as f:
+                                yaml.dump({
+                                    "parameters": {
+                                        "threshold": float(threshold),
+                                        "prep_resolution": int(prep_resolution),
+                                        "mcts_iteration": int(mcts_iteration),
+                                        "mcts_depth": int(mcts_depth),
+                                        "mcts_node": int(mcts_node),
+                                        "resolution": int(resolution),
+                                        "pca": bool(pca),
+                                    },
+                                    "metrics": {
+                                        "hausdorff": float(H),
+                                        "vertices": int(V_raw),
+                                        "runtime": float(runtime),
+                                        "num_parts": int(num_parts),
+                                    },
+                                    "baseline_metrics": {
+                                        "hausdorff": float(self.baseline_metrics['hausdorff_distance']),
+                                        "runtime": float(self.baseline_metrics['runtime']),
+                                        "vertices": int(self.baseline_metrics['total_vertices']),
+                                        "num_parts": int(self.baseline_metrics['num_parts']),
+                                    }
+                                }, f)
 
                     # Cleanup heavy objects before step ends
                     try:
@@ -555,7 +599,7 @@ class CoACDEnv(gym.Env):
             "timeout": timeout,
             "success": success,
             "improvement": improvement,
-            "params": {"threshold": threshold, "no_merge": no_merge, "max_hull": max_hull},
+            "params": {"threshold": threshold, "prep_resolution": prep_resolution, "mcts_iteration": mcts_iteration, "mcts_depth": mcts_depth, "mcts_node": mcts_node, "resolution": resolution, "pca": pca},
             "error_type": error_type,
         }
 

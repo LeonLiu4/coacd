@@ -2,8 +2,9 @@ import numpy as np
 import trimesh
 import torch
 from pytorch3d.ops import knn_points
-import pyrender
 import os
+os.environ["PYOPENGL_PLATFORM"] = "egl"
+import pyrender
 import pymeshlab
 
 
@@ -152,14 +153,14 @@ def sample_surface_points_from_parts_fast(parts, n_pts: int, seed: int = 42, num
             #print("DEBUG: Using 100k+ point strategy with 256x256 resolution")
             result = sample_surface_points_via_depth(parts, n_pts=n_pts, num_dirs=num_angles,
                                                   resolution=256, yfov_deg=60.0,  # Even lower resolution for speed
-                                                  tol=1e-2, seed=seed, save_debug=False,  # Higher tolerance for speed
+                                                  tol=1e-4, seed=seed, save_debug=False,  # Higher tolerance for speed
                                                   use_meshlab_simplification=True)  # Enable MeshLab for 100k points
         else:
             # For smaller point counts, use the standard approach
             #print("DEBUG: Using standard strategy with 512x512 resolution")
             result = sample_surface_points_via_depth(parts, n_pts=n_pts, num_dirs=num_angles,
                                                   resolution=512, yfov_deg=60.0,  # Lower resolution for speed
-                                                  tol=1e-2, seed=seed, save_debug=False,  # Higher tolerance for speed
+                                                  tol=1e-4, seed=seed, save_debug=False,  # Higher tolerance for speed
                                                   use_meshlab_simplification=True)  # Enable MeshLab for 100k points
         
         #print(f"DEBUG: sample_surface_points_from_parts_fast completed - {len(result)} points")
@@ -291,12 +292,15 @@ def sample_surface_points_via_depth(parts,
             idx = np.arange(0, len(pts), step, dtype=int)[:n_pts]
             pts = pts[idx]
             print(f"Downsampled to {len(pts)} points")
-        elif len(pts) < n_pts:
-            print(f"Need {n_pts - len(pts)} more points, sampling from mesh...")
-            np.random.seed(seed)  # Ensure deterministic fallback
-            extra = mesh.sample(n_pts - len(pts))
-            pts = np.vstack([pts, extra])
-            print(f"Final point count: {len(pts)}")
+        
+        # No need to sample more points, which could lead to false sampling
+        
+        # elif len(pts) < n_pts:
+        #     print(f"Need {n_pts - len(pts)} more points, sampling from mesh...")
+        #     np.random.seed(seed)  # Ensure deterministic fallback
+        #     extra = mesh.sample(n_pts - len(pts))
+        #     pts = np.vstack([pts, extra])
+        #     print(f"Final point count: {len(pts)}")
     
     if save_debug:
         print(f"\nDebug data saved to {debug_dir}/:")
